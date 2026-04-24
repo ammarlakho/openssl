@@ -19,11 +19,8 @@ compile() {
 }
 
 compile-cov() {
-    # Coverage-instrumented build: adds -fprofile-instr-generate -fcoverage-mapping
-    # so mull-runner can filter to only reachable mutants (~34 vs ~1600).
-    # Requires make clean because config flags change.
     docker_run bash -c 'make clean 2>/dev/null; true'
-    docker_run ./config -O0 \
+    docker_run ./config no-shared -O0 \
         -fpass-plugin=/usr/lib/mull-ir-frontend-18 \
         -g -grecord-command-line \
         -fprofile-instr-generate -fcoverage-mapping
@@ -52,7 +49,7 @@ case "$1" in
         echo ""
         echo "  build        Build toolchain image (Mull + clang; no OpenSSL compile)"
         echo "  compile      Configure + build bio_enc_test — no coverage (~1600 mutants)"
-        echo "  compile-cov  Reconfigure + rebuild with coverage instrumentation (~34 mutants, much faster)"
+        echo "  compile-cov  Reconfigure + rebuild with coverage + no-shared (~40 mutants in real crypto code)"
         echo "  mutate       Run mutation testing against ./test/bio_enc_test"
         echo "  shell        Interactive shell in the container"
         echo "  run          compile + mutate"
