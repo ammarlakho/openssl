@@ -1,6 +1,6 @@
 FROM ubuntu:24.04
 
-# Toolchain only — OpenSSL is compiled via `./mull.sh compile` with a bind mount
+# Toolchain only — OpenSSL is compiled via `./mull-mutation/mull.sh compile` with a bind mount
 # so incremental `make` works and you rarely rebuild this image.
 
 RUN apt-get update && apt-get install -y \

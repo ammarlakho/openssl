@@ -1,13 +1,19 @@
 #!/bin/bash
 
 IMAGE=mull-openssl
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+MULL_CONFIG_PATH="/openssl/mull-mutation/mull.yml"
 
 docker_run() {
-    docker run --rm -v "$(pwd):/openssl" -w /openssl "$IMAGE" "$@"
+    docker run --rm \
+        -e "MULL_CONFIG=$MULL_CONFIG_PATH" \
+        -v "$REPO_ROOT:/openssl" -w /openssl \
+        "$IMAGE" "$@"
 }
 
 build() {
-    docker build -t "$IMAGE" .
+    docker build -t "$IMAGE" "$SCRIPT_DIR"
 }
 
 compile() {
@@ -33,7 +39,7 @@ mutate() {
 }
 
 shell() {
-    docker run --rm -it -v "$(pwd):/openssl" -w /openssl "$IMAGE" bash
+    docker run --rm -it -v "$REPO_ROOT:/openssl" -w /openssl "$IMAGE" bash
 }
 
 case "$1" in
@@ -45,7 +51,7 @@ case "$1" in
     run)         compile && mutate ;;
     run-cov)     compile-cov && mutate ;;
     *)
-        echo "Usage: ./mull.sh [build|compile|compile-cov|mutate|shell|run|run-cov]"
+        echo "Usage: ./mull-mutation/mull.sh [build|compile|compile-cov|mutate|shell|run|run-cov]"
         echo ""
         echo "  build        Build toolchain image (Mull + clang; no OpenSSL compile)"
         echo "  compile      Configure + build bio_enc_test — no coverage (~1600 mutants)"
