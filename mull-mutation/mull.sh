@@ -16,7 +16,12 @@ build() {
     docker build -t "$IMAGE" "$SCRIPT_DIR"
 }
 
+make_clean() {
+    docker_run bash -c 'make clean 2>/dev/null; true'
+}
+
 compile() {
+    make_clean
     docker_run ./config -O0 \
         -fpass-plugin=/usr/lib/mull-ir-frontend-18 \
         -g -grecord-command-line
@@ -25,7 +30,7 @@ compile() {
 }
 
 compile-cov() {
-    docker_run bash -c 'make clean 2>/dev/null; true'
+    make_clean
     docker_run ./config no-shared -O0 \
         -fpass-plugin=/usr/lib/mull-ir-frontend-18 \
         -g -grecord-command-line \
@@ -44,6 +49,7 @@ shell() {
 
 case "$1" in
     build)       build ;;
+    make_clean)  make_clean ;;
     compile)     compile ;;
     compile-cov) compile-cov ;;
     mutate)      mutate ;;
@@ -51,9 +57,10 @@ case "$1" in
     run)         compile && mutate ;;
     run-cov)     compile-cov && mutate ;;
     *)
-        echo "Usage: ./mull-mutation/mull.sh [build|compile|compile-cov|mutate|shell|run|run-cov]"
+        echo "Usage: ./mull-mutation/mull.sh [build|make_clean|compile|compile-cov|mutate|shell|run|run-cov]"
         echo ""
         echo "  build        Build toolchain image (Mull + clang; no OpenSSL compile)"
+        echo "  make_clean   Run make clean inside the container"
         echo "  compile      Configure + build bio_enc_test — no coverage (~1600 mutants)"
         echo "  compile-cov  Reconfigure + rebuild with coverage + no-shared (~40 mutants in real crypto code)"
         echo "  mutate       Run mutation testing against ./test/bio_enc_test"
