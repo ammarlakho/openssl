@@ -1,0 +1,5 @@
+- Increasing mutant operators
+- Statistics on experimenting with temperature, repeat_penalty, repeat_penalty, seed on gpt-oss
+- Entropy metrics
+- (Optional) Look at the other mutation metrics (bi-part metrics)
+- (Optional) Caching for general prompt

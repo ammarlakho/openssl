@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# Emit a compilable OpenSSL test skeleton to stdout (includes + setup_tests + ADD_TEST).
+# Intended use: scaffold here, pipe implementation context to Ollama in --snippet mode,
+# then paste only between BEGIN_LLM_REPLACE / END_LLM_REPLACE.
+#
+# usage: gen-openssl-test-stub.sh <PROGRAM_BASENAME> <test_fn_name>
+#   PROGRAM_BASENAME  e.g. generated_ml_test  (no .c; used only in banner comment)
+#   test_fn_name      e.g. test_ml_bio_enc_roundtrip  (must be valid C identifier)
+#
+set -euo pipefail
+
+die() { echo "gen-openssl-test-stub: $*" >&2; exit 1; }
+
+[[ "${#}" -eq 2 ]] || die "usage: $0 <PROGRAM_BASENAME> <test_fn_name>"
+PROG="$1"
+FUNC="$2"
+[[ "${FUNC}" =~ ^test_[A-Za-z0-9_]+$ ]] || die "test_fn_name should look like test_foo (${FUNC})"
+
+YEAR="$(date +%Y)"
+
+cat <<EOF
+/*
+ * Copyright ${YEAR} The OpenSSL Project Authors. All Rights Reserved.
+ *
+ * Licensed under the Apache License 2.0 (the "License").  You may not use
+ * this file except in compliance with the License.  You can obtain a copy
+ * in the file LICENSE in the source distribution or at
+ * https://www.openssl.org/source/license.html
+ *
+ * Skeleton for: ${PROG}.c — fill ONLY between BEGIN_LLM_REPLACE / END_LLM_REPLACE.
+ */
+
+#include <string.h>
+
+#include <openssl/bio.h>
+#include <openssl/evp.h>
+
+#include "testutil.h"
+
+static int ${FUNC}(void)
+{
+    /*
+     * BEGIN_LLM_REPLACE
+     * Paste model output here only (between markers). Implement behavior using TEST_* macros.
+     * END_LLM_REPLACE
+     */
+    if (!TEST_true(1))
+        return 0;
+    return 1;
+}
+
+int setup_tests(void)
+{
+    ADD_TEST(${FUNC});
+    return 1;
+}
+EOF
