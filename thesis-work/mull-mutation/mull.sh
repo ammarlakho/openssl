@@ -2,8 +2,8 @@
 
 IMAGE=mull-openssl
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-MULL_CONFIG_PATH="/openssl/mull-mutation/mull.yml"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+MULL_CONFIG_PATH="/openssl/thesis-work/mull-mutation/mull.yml"
 
 docker_run() {
     docker run --rm \
@@ -20,20 +20,24 @@ make_clean() {
     docker_run bash -c 'make clean 2>/dev/null; true'
 }
 
+# Compile for running tests (without coverage)
 compile() {
     make_clean
     docker_run ./config -O0 \
         -fpass-plugin=/usr/lib/mull-ir-frontend-18 \
+        -Xclang -mull-config -Xclang "$MULL_CONFIG_PATH" \
         -g -grecord-command-line
     docker_run bash -c 'make -s build_generated -j"$(nproc)"'
     docker_run bash -c 'make -s ./test/bio_enc_test -j"$(nproc)"'
 }
 
+# Compile for running mutation tests (with coverage)
 compile-cov() {
     local test="${1:-./test/bio_enc_test}"
     make_clean
     docker_run ./config no-shared -O0 \
         -fpass-plugin=/usr/lib/mull-ir-frontend-18 \
+        -Xclang -mull-config -Xclang "$MULL_CONFIG_PATH" \
         -g -grecord-command-line \
         -fprofile-instr-generate -fcoverage-mapping # only mutate code that is executed by the run of the test/s
     docker_run bash -c 'make -s build_generated -j"$(nproc)"'
@@ -41,6 +45,7 @@ compile-cov() {
     docker_run bash -c "make -s $test -j\"\$(nproc)\""
 }
 
+# Compile for running tests
 compile-normal() {
     make_clean
     docker_run ./config
@@ -78,6 +83,7 @@ case "$1" in
     compile-normal) compile-normal ;;
     test-all)    test-all ;;
     test-recipe) test-recipe "$2" ;;
+    docker-run) shift; docker_run "$@" ;;
     *)
         echo "Usage: ./mull-mutation/mull.sh [build|make_clean|compile|compile-cov|mutate|shell|run|run-cov] [test]"
         echo ""
