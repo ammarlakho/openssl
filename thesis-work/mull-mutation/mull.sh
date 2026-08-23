@@ -34,10 +34,8 @@ compile() {
 # Compile for running mutation tests (with coverage)
 compile-cov() {
     local test="${1:-./test/bio_enc_test}"
-    make_clean
     docker_run ./config no-shared -O0 \
         -fpass-plugin=/usr/lib/mull-ir-frontend-18 \
-        -Xclang -mull-config -Xclang "$MULL_CONFIG_PATH" \
         -g -grecord-command-line \
         -fprofile-instr-generate -fcoverage-mapping # only mutate code that is executed by the run of the test/s
     docker_run bash -c 'make -s build_generated -j"$(nproc)"'
@@ -45,9 +43,14 @@ compile-cov() {
     docker_run bash -c "make -s $test -j\"\$(nproc)\""
 }
 
+mutate() {
+    local test="${1:-./test/bio_enc_test}"
+    echo "Running mutation testing against: $test"
+    docker_run mull-runner-18 "$test"
+}
+
 # Compile for running tests
 compile-normal() {
-    make_clean
     docker_run ./config
     docker_run bash -c 'make -s -j"$(nproc)"'
 }
@@ -56,15 +59,10 @@ compile-normal() {
 test-all() {
     docker_run bash -c 'make test'
 }
-# Run a specific recipe by name, e.g.: ./mull.sh test-recipe 30-test_evp
+
+# Run a specific recipe by name, e.g.: ./mull.sh test-recipe test_evp/test_rsa (recipe name without the number- prefix)
 test-recipe() {
     docker_run bash -c "make test TESTS=$1"
-}
-
-mutate() {
-    local test="${1:-./test/bio_enc_test}"
-    echo "Running mutation testing against: $test"
-    docker_run mull-runner-18 "$test"
 }
 
 shell() {
@@ -98,6 +96,6 @@ case "$1" in
         echo "  run          compile + mutate"
         echo "  run-cov      compile-cov + mutate (optional test arg)"
         echo "  test-all     Run all tests"
-        echo "  test-recipe  Run a specific recipe by name, e.g.: ./mull.sh test-recipe 30-test_evp"
+        echo "  test-recipe  Run a specific recipe by name, e.g.: ./mull.sh test-recipe test_evp"
         ;;
 esac

@@ -11,6 +11,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 THESIS_DIR_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+REPO_ROOT="$(cd "${THESIS_DIR_ROOT}/.." && pwd)"
 SECONDS=0
 
 # Load env
@@ -58,6 +59,12 @@ if [[ ${#ARGS[@]} -eq 0 ]]; then
 fi
 
 # Note: --profile defaults to gptoss if not specified
+
+# Resolve INTO relative to the repo root, so the script behaves the same
+# regardless of the caller's current working directory.
+if [[ -n "${INTO}" && "${INTO}" != /* ]]; then
+    INTO="${REPO_ROOT}/${INTO}"
+fi
 
 # 2. Resolve API_URL and MODEL from environment variables (required)
 case "${PROFILE}" in

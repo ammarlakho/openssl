@@ -18,3 +18,17 @@ First time: `./mull-mutation/mull.sh build` → `./mull-mutation/mull.sh compile
 ---
 
 Use compile-cov since you want to avoid creating mutants in code that `bio_enc_test` never reaches.
+
+
+
+### Running tests:
+`./thesis-work/mull-mutation/mull.sh compile-normal`
+`./thesis-work/mull-mutation/mull.sh test-recipe test_bio_enc_generated` (recipe name without the number- prefix)
+
+Note: If existing test is modified, no need to recompile for just running the test
+Q: Do we reallly need to do make clean in compile-normal?
+
+### Running mutation testing:
+`./thesis-work/mull-mutation/mull.sh compile-cov ./test/generated_test` (test file)
+`./thesis-work/mull-mutation/mull.sh mutate ./test/generated_test` (test file)
+
