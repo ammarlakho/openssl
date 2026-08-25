@@ -1,122 +1,144 @@
 # OpenSSL Test Generation Scripts
 
-This directory contains scripts for generating OpenSSL unit tests using LLM models via Ollama or remote APIs.
+Generate OpenSSL unit tests with an LLM — either a local Ollama install or a
+remote OpenAI-compatible endpoint.
 
-## User-Facing Scripts
+Everything lives behind one entry point, `llm_test.py`, backed by the `llmtest`
+package. Python 3.9+, standard library only: no `curl`, `jq`, `rg`, or
+third-party packages required.
 
-### `ollama-openssl-test-remote.sh`
-
-Generate OpenSSL unit tests using a remote OpenAI-compatible LLM API (gptoss, Gemma API, or other compatible endpoints).
-
-**Usage:**
-```bash
-./ollama-openssl-test-remote.sh [--profile gptoss|gemma] [--into STUB.c] [OPTIONS] PATH/UNDER/crypto/foo.c
+```
+llm_test.py            CLI entry point
+llmtest/paths.py       repo / thesis directory resolution
+llmtest/context.py     prompt assembly (source + reference tests + rules)
+llmtest/stub.py        test .c skeleton generation and splicing
+llmtest/backends.py    local Ollama and remote HTTP backends
+llmtest/cli.py         argument parsing and command dispatch
+register_test.py       register a new test binary in test/build.info
 ```
 
-**Environment variables:**
+Paths you pass are resolved against the repo root, so the commands below work
+from any directory.
 
-Copy `llm-models.env.example` to `llm-models.env` and fill in the empty values.
+## Commands
 
-**Example:**
+| Command | Purpose |
+|---------|---------|
+| `generate` | Assemble a prompt, run a model, print or splice the result |
+| `context`  | Print the assembled prompt without calling a model |
+| `stub`     | Print a fresh test `.c` skeleton |
+| `fill`     | Splice a generated body into an existing stub |
+
+## Workflow: snippet mode (recommended)
+
+1. **Scaffold a stub** (once per test):
+
+   ```bash
+   ./thesis-work/scripts/llm_test.py stub generated_test test_bio_enc_smoke \
+     > test/generated_test.c
+   ```
+
+2. **Fill it with a model:**
+
+   ```bash
+   ./thesis-work/scripts/llm_test.py generate \
+     --into test/generated_test.c \
+     --snippet --impl-lines 400 \
+     --task "AES-256 CBC BIO round-trip vs fixed vectors" \
+     crypto/evp/bio_enc.c
+   ```
+
+   `--into` splices the model output between the `BEGIN_LLM_REPLACE` and
+   `END_LLM_REPLACE` markers in the stub, stripping echoed markers, markdown
+   fences, and ANSI terminal escapes on the way in.
+
+3. **Verify and compile.** For a brand new test binary, register it first with
+   `register_test.py <name>`.
+
+Run `generate` with no arguments at all to apply the default AES-256 scenario
+above (snippet mode, `crypto/evp/bio_enc.c`, into `test/generated_test.c`).
+
+## Full module (single shot)
+
+Without `--snippet` the model emits a whole compilable `.c`:
+
 ```bash
-LLM_PROFILE=gptoss GPTOSS_API_URL=http://localhost:11434/api/chat \
-  GPTOSS_MODEL=qwen2.5-coder:7b ./ollama-openssl-test-remote.sh \
-  --into test/generated_test.c \
-  --snippet --task "BIO cipher operations" \
-  crypto/evp/bio_enc.c
-```
-
-
-### `ollama-openssl-test.sh`
-
-Generate OpenSSL unit tests locally using Ollama with an LLM model.
-
-**Usage:**
-```bash
-OLLAMA_MODEL=qwen2.5-coder:7b ./ollama-openssl-test.sh [OPTIONS] PATH/UNDER/crypto/foo.c
-```
-
-**Common options:**
-- `--into STUB.c` — Splice LLM output into an existing test stub between `BEGIN_LLM_REPLACE` and `END_LLM_REPLACE` markers
-- `--snippet` — Generate only the test body (snippet mode); use with a pre-generated stub
-- `--impl-lines N` — Limit source file to first N lines (default: 280)
-- `--task "..."` — Free-form scenario description for the LLM
-- `--refs K` — Number of reference test files to include (default: 3)
-- `--lines N` — Lines per reference file (default: 20)
-
-**Example: Generate a complete test**
-```bash
-OLLAMA_MODEL=qwen2.5-coder:7b ./ollama-openssl-test.sh \
+./thesis-work/scripts/llm_test.py generate \
   --task "AES-256 CBC operations" \
   crypto/evp/bio_enc.c > test/bio_enc_test.c
 ```
 
-**Example: Fill an existing stub**
-```bash
-./scripts/utils/gen-openssl-test-stub.sh generated_test test_bio_enc_smoke > test/generated_test.c
+## Backends
 
-OLLAMA_MODEL=qwen2.5-coder:7b ./ollama-openssl-test.sh \
+`--backend ollama` shells out to `ollama run`. The model comes
+from `--model`, else `$OLLAMA_MODEL`, else `qwen2.5-coder:7b`.
+
+```bash
+OLLAMA_MODEL=qwen2.5-coder:7b ./thesis-work/scripts/llm_test.py generate \
+  --snippet --task "BIO cipher operations" crypto/evp/bio_enc.c
+```
+
+`--backend remote` (the default) POSTs to an OpenAI-compatible chat-completions endpoint
+(Ollama's native `/api/chat` response shape is also accepted).
+
+```bash
+./thesis-work/scripts/llm_test.py generate --backend remote --profile gemma \
   --into test/generated_test.c \
-  --snippet --impl-lines 400 \
-  --task "AES-256 CBC BIO round-trip vs fixed vectors" \
-  crypto/evp/bio_enc.c
+  --snippet --task "BIO cipher operations" crypto/evp/bio_enc.c
 ```
 
-## Internal Helper Scripts (under `utils/`)
+### Remote configuration
 
-These scripts support the user-facing tools. You typically do not call them directly:
+Copy `llm-movels.env.example` to `llm-models.env` (gitignored) and fill it in:
 
-- **`gen-openssl-test-stub.sh`** — Scaffold a new test `.c` file with boilerplate (`main`, `ADD_TEST` calls, includes)
-- **`fill-openssl-test-stub.sh`** — Splice LLM-generated code into a stub, handling markdown fences and ANSI escapes
-- **`llm-openssl-test-context.sh`** — Assemble the full prompt for the LLM (source code + references + rules + scenario)
-
-## Workflow: Snippet Mode (Recommended)
-
-1. **Generate a stub** (once per test):
-   ```bash
-   ./scripts/utils/gen-openssl-test-stub.sh test_name test_label > test/test_name.c
-   ```
-
-2. **Run Ollama to fill the stub:**
-   ```bash
-   OLLAMA_MODEL=qwen2.5-coder:7b ./ollama-openssl-test.sh \
-     --into test/test_name.c \
-     --snippet --impl-lines 400 \
-     --task "your scenario description" \
-     crypto/evp/your_source.c
-   ```
-
-3. **Verify and compile** — the stub now contains LLM-generated test logic between markers
-
-See `../docs/llm-openssl-ollama.md` for detailed documentation.
-
-## Requirements
-
-- **bash**, **find**, **grep**, **head**
-- **ollama** (for `ollama-openssl-test.sh`) — https://ollama.ai
-- **curl**, **jq** (for `ollama-openssl-test-remote.sh`)
-
-## Configuration
-
-### Local Ollama
-
-Set `OLLAMA_MODEL` in your environment:
-```bash
-export OLLAMA_MODEL=qwen2.5-coder:7b
-```
-
-The `ollama` command must be in your `PATH` and the service running (default: `http://localhost:11434`).
-
-### Remote API (gptoss)
-
-Create or edit `../llm-models.env`:
 ```bash
 LLM_PROFILE=gptoss
-GPTOSS_API_URL=http://localhost:11434/api/chat
-GPTOSS_MODEL=qwen2.5-coder:7b
+GPTOSS_API_URL=http://host:11434/v1/chat/completions
+GPTOSS_MODEL=gpt-oss:120b
+GEMMA_API_URL=http://host:8000/v1/chat/completions
+GEMMA_MODEL=RedHatAI/gemma-4-31B-it-FP8-Dynamic
 ```
 
-Or pass variables directly:
-```bash
-API_URL=http://your-api:port/chat LLM_MODEL=model-name ./ollama-openssl-test-remote.sh ...
-```
+A profile named `foo` reads `FOO_API_URL` and `FOO_MODEL`, so adding a profile
+is just two more lines — no code change. Resolution order, highest first:
+
+1. `--api-url` / `--model` / `--profile` on the command line
+2. `API_URL` / `LLM_MODEL` / `LLM_PROFILE` in the real environment
+3. `<PROFILE>_API_URL` / `<PROFILE>_MODEL` from `llm-models.env`
+
+Blank values in the env file are ignored rather than treated as set.
+
+## Prompt options
+
+Shared by `generate` and `context`:
+
+| Flag | Meaning |
+|------|---------|
+| `--snippet` | Snippet rules doc; body-only output; shorter default excerpts |
+| `--impl-lines N` | Truncate the source under test (default 280) |
+| `--full-source` | Include the whole source file instead |
+| `--refs K` | Number of reference test files (default 5, or 4 with `--snippet`) |
+| `--lines N` | Lines excerpted per reference file (default 120, or 50 with `--snippet`) |
+| `--task "…"` | Free-form scenario description |
+| `--keywords a,b` | Extra search terms when picking reference tests |
+| `--notes` | List `NOTES*.md` at the repo root |
+
+`context` also takes `--contract-only` to print just the rules document.
+
+## Prompt structure
+
+`context.py` assembles, in order:
+
+1. **WHY_YOU_ARE_HERE** — scenario and snippet-mode hint
+2. **SOURCE_UNDER_TEST** — the `crypto/...` file being tested
+3. **REFERENCE_TESTS** — short excerpts from other tests (style/API hints only)
+4. **RULES** — `docs/llm-openssl-test-contract.md`, or the snippet contract
+5. **WHAT_TO_EMIT** — the output task
+
+Reference tests are picked by scanning `test/**/*.c` for the source file's
+stem, its two enclosing directory names, up to 20 public API symbols found in
+the source (`BIO_*`, `EVP_*`, `SSL_*`, …), and any `--keywords`. Files are
+ranked by how many of those terms they match. Previously generated tests are
+excluded so the model never sees its own output as a reference.
+
+See `../docs/llm-openssl-ollama.md` for the operator guide.

@@ -1,6 +1,6 @@
 # Snippet-mode rules (stub already exists)
 
-Operators generate **`setup_tests`, `ADD_TEST`, `#include`** with **`scripts/utils/gen-openssl-test-stub.sh`** (or by hand).
+Operators generate **`setup_tests`, `ADD_TEST`, `#include`** with **`scripts/llm_test.py stub`** (or by hand).
 
 The LLM fills **only the body** inside **`BEGIN_LLM_REPLACE` … `END_LLM_REPLACE`** in that stub.
 

@@ -2,7 +2,7 @@
 
 Stable rules for generating a **new** OpenSSL unit-test `.c`. For **Ollama** packaging see **`docs/llm-openssl-ollama.md`**.
 
-Prefer splitting work: scaffold **`includes`**, **`setup_tests`**, **`ADD_TEST`** locally (script **`scripts/utils/gen-openssl-test-stub.sh`** or by hand); run **`scripts/utils/llm-openssl-test-context.sh --snippet`** so the LLM replaces only **`BEGIN_LLM_REPLACE` … `END_LLM_REPLACE`** (see **`docs/llm-openssl-test-snippet.md`**).
+Prefer splitting work: scaffold **`includes`**, **`setup_tests`**, **`ADD_TEST`** locally (script **`scripts/llm_test.py stub`** or by hand); run **`scripts/llm_test.py context --snippet`** so the LLM replaces only **`BEGIN_LLM_REPLACE` … `END_LLM_REPLACE`** (see **`docs/llm-openssl-test-snippet.md`**).
 
 Prompt bundles place **implementation (`SOURCE_UNDER_TEST`) first**, then short **REFERENCE_TESTS** for style—they are **not** the finished test binary you are authoring.
 
