@@ -14,14 +14,13 @@ from pathlib import Path
 
 from . import backends, paths, stub
 from .context import ContextError, ContextOptions, build_contract_only, build_prompt
-from .backends import BackendError
+from .backends import BackendError, GenParams
 from .stub import StubError
 
 # Applied by `generate` when the caller passes no context arguments at all.
 DEFAULT_TASK = "AES-256 CBC BIO round-trip vs fixed vectors"
 DEFAULT_SOURCE = "crypto/evp/bio_enc.c"
 DEFAULT_INTO = "test/generated_test.c"
-DEFAULT_IMPL_LINES = 400
 
 
 def _context_parser() -> argparse.ArgumentParser:
@@ -35,7 +34,7 @@ def _context_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--full-source",
         action="store_true",
-        help="include the whole source file instead of the first --impl-lines",
+        help="no-op, kept for compatibility: the whole source is the default",
     )
     parser.add_argument("--notes", action="store_true", help="list NOTES*.md at the repo root")
     parser.add_argument("--task", default="", help="free-form scenario description")
@@ -48,26 +47,62 @@ def _context_parser() -> argparse.ArgumentParser:
         "--impl-lines",
         type=int,
         default=None,
-        help="lines of the source file to include (default: 280)",
+        help="truncate the source under test to its first N lines "
+             "(default: no truncation)",
     )
     parser.add_argument("--refs", type=int, default=None, help="number of reference tests")
     parser.add_argument("--lines", type=int, default=None, help="lines per reference test")
+    parser.add_argument(
+        "--stub",
+        default=None,
+        help="stub .c to show the model in snippet mode (generate: defaults to --into)",
+    )
     return parser
 
 
+def _params_parser() -> argparse.ArgumentParser:
+    """Sampling knobs."""
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--temperature", type=float, default=None)
+    parser.add_argument("--top-p", type=float, default=None)
+    parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument(
+        "--max-tokens",
+        type=int,
+        default=None,
+        help="cap on generated tokens; raise this if output comes back truncated",
+    )
+    parser.add_argument(
+        "--reasoning-effort",
+        choices=("low", "medium", "high"),
+        default=None,
+        help="reasoning models (gpt-oss); ignored by servers that do not support it",
+    )
+    return parser
+
+
+def _params_from(args: argparse.Namespace) -> GenParams:
+    return GenParams(
+        temperature=args.temperature,
+        top_p=args.top_p,
+        seed=args.seed,
+        max_tokens=args.max_tokens,
+        reasoning_effort=args.reasoning_effort,
+    )
+
+
 def _options_from(args: argparse.Namespace) -> ContextOptions:
-    opts = ContextOptions(
+    # --full-source is now the behaviour, so it only survives as a no-op flag.
+    return ContextOptions(
         snippet=args.snippet,
-        full_source=args.full_source,
         notes=args.notes,
         task=args.task,
         keywords=[k for k in args.keywords.split(",") if k.strip()],
         refs=args.refs,
         lines=args.lines,
+        stub_path=args.stub,
+        impl_lines=None if args.full_source else args.impl_lines,
     )
-    if args.impl_lines is not None:
-        opts.impl_lines = args.impl_lines
-    return opts
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -77,23 +112,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="command", required=True)
     shared = _context_parser()
+    sampling = _params_parser()
 
     gen = sub.add_parser(
         "generate",
-        parents=[shared],
+        parents=[shared, sampling],
         help="run a model and print or splice the generated test",
     )
     gen.add_argument("source", nargs="?", help="path to the source file under test")
-    gen.add_argument(
-        "--backend",
-        choices=("ollama", "remote"),
-        default="remote",
-        help="local Ollama or a remote OpenAI-compatible endpoint (default)",
-    )
     gen.add_argument("--into", help="stub .c file to splice the result into")
     gen.add_argument("--model", help="override the model name")
-    gen.add_argument("--profile", help="remote profile name (default: gptoss)")
-    gen.add_argument("--api-url", help="remote endpoint URL, overriding the profile")
+    gen.add_argument("--profile", help="endpoint profile name (default: gptoss)")
+    gen.add_argument("--api-url", help="endpoint URL, overriding the profile")
 
     ctx = sub.add_parser("context", parents=[shared], help="print the assembled prompt")
     ctx.add_argument("source", nargs="?", help="path to the source file under test")
@@ -106,6 +136,11 @@ def build_parser() -> argparse.ArgumentParser:
     st = sub.add_parser("stub", help="print a test .c skeleton")
     st.add_argument("program", help="program basename, e.g. generated_test")
     st.add_argument("function", help="test function name, e.g. test_bio_enc_roundtrip")
+    st.add_argument(
+        "--source",
+        default=None,
+        help="source under test; its API symbols decide the stub's includes",
+    )
 
     fill = sub.add_parser("fill", help="splice a generated body into a stub")
     fill.add_argument("stub", help="path to the stub .c file")
@@ -125,7 +160,8 @@ def cmd_context(args: argparse.Namespace) -> None:
 
 
 def cmd_stub(args: argparse.Namespace) -> None:
-    sys.stdout.write(stub.generate_stub(args.program, args.function))
+    source = paths.resolve_under_repo(args.source) if args.source else None
+    sys.stdout.write(stub.generate_stub(args.program, args.function, source))
 
 
 def cmd_fill(args: argparse.Namespace) -> None:
@@ -141,15 +177,18 @@ def cmd_generate(args: argparse.Namespace) -> None:
         args.source = DEFAULT_SOURCE
         args.snippet = True
         args.task = args.task or DEFAULT_TASK
-        args.impl_lines = args.impl_lines or DEFAULT_IMPL_LINES
         args.into = args.into or DEFAULT_INTO
 
-    prompt = build_prompt(args.source, _options_from(args))
+    # In snippet mode the model is filling a specific file, so show it that
+    # file: without it the model cannot know which headers exist or what the
+    # function is called, and guesses wrong.
+    if args.snippet and not args.stub and args.into:
+        args.stub = args.into
 
-    if args.backend == "ollama":
-        result = backends.run_ollama(prompt, args.model)
-    else:
-        result = backends.run_remote(prompt, args.profile, args.api_url, args.model)
+    prompt = build_prompt(args.source, _options_from(args))
+    result = backends.run_remote(
+        prompt, args.profile, args.api_url, args.model, _params_from(args)
+    )
 
     if args.into:
         target = paths.resolve_under_repo(args.into)

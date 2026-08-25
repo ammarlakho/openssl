@@ -1,12 +1,12 @@
 # OpenSSL LLM test generation contract
 
-Stable rules for generating a **new** OpenSSL unit-test `.c`. For **Ollama** packaging see **`docs/llm-openssl-ollama.md`**.
+Stable rules for generating a **new** OpenSSL unit-test `.c`.
 
 Prefer splitting work: scaffold **`includes`**, **`setup_tests`**, **`ADD_TEST`** locally (script **`scripts/llm_test.py stub`** or by hand); run **`scripts/llm_test.py context --snippet`** so the LLM replaces only **`BEGIN_LLM_REPLACE` … `END_LLM_REPLACE`** (see **`docs/llm-openssl-test-snippet.md`**).
 
 Prompt bundles place **implementation (`SOURCE_UNDER_TEST`) first**, then short **REFERENCE_TESTS** for style—they are **not** the finished test binary you are authoring.
 
-*(Operator workflow for Ollama: **`docs/llm-openssl-ollama.md`**.)*
+*(Operator workflow: **`docs/llm-openssl-operator.md`**.)*
 
 ## Forbidden includes and symbols
 

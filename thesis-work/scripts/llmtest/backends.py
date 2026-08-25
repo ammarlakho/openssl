@@ -1,20 +1,18 @@
-"""Send a prompt to a model: local Ollama, or a remote OpenAI-compatible API.
+"""Send a prompt to a model over an OpenAI-compatible chat-completions API.
 
 Uses urllib and the standard library, no external dependencies.
 """
 
 import json
 import os
-import shutil
-import subprocess
 import sys
 import urllib.error
 import urllib.request
-from typing import Dict, Optional
+from dataclasses import dataclass, asdict
+from typing import Any, Dict, Optional
 
 from . import paths
 
-DEFAULT_OLLAMA_MODEL = "qwen2.5-coder:7b"
 DEFAULT_PROFILE = "gptoss"
 REQUEST_TIMEOUT = 600
 
@@ -27,29 +25,100 @@ def log(message: str) -> None:
     print(message, file=sys.stderr)
 
 
-# --------------------------------------------------------------------------
-# Local Ollama
-# --------------------------------------------------------------------------
+@dataclass
+class GenParams:
+    """Sampling knobs. Every field is optional: None means "server default".
 
-def run_ollama(prompt: str, model: Optional[str] = None) -> str:
-    """Pipe `prompt` through `ollama run` and return the model's reply."""
-    model = model or os.environ.get("OLLAMA_MODEL") or DEFAULT_OLLAMA_MODEL
+    Kept as one object so a sweep can vary decoding without touching the call
+    sites, and so the exact settings behind a generated test can be recorded.
+    """
 
-    if shutil.which("ollama") is None:
-        raise BackendError("'ollama' not found in PATH")
+    temperature: Optional[float] = None
+    top_p: Optional[float] = None
+    seed: Optional[int] = None
+    max_tokens: Optional[int] = None
+    # gpt-oss and other reasoning models: "low" | "medium" | "high".
+    reasoning_effort: Optional[str] = None
 
-    log(">> [Info] Querying local Ollama ({})...".format(model))
-    proc = subprocess.run(
-        ["ollama", "run", model, "--keepalive", "0"],
-        input=prompt,
-        capture_output=True,
-        text=True,
+    def as_dict(self) -> Dict[str, Any]:
+        """Only the fields that were actually set."""
+        return {k: v for k, v in asdict(self).items() if v is not None}
+
+    def describe(self) -> str:
+        given = self.as_dict()
+        return ", ".join("{}={}".format(k, v) for k, v in sorted(given.items())) or "server defaults"
+
+
+def _post_json(url: str, body: Dict[str, Any], headers: Dict[str, str]) -> dict:
+    """POST a JSON body and return the decoded reply."""
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(body).encode(),
+        headers=dict(headers, **{"Content-Type": "application/json"}),
+        method="POST",
     )
-    if proc.returncode != 0:
+    try:
+        with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT) as response:
+            raw = response.read().decode()
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode(errors="replace")[:500]
+        raise BackendError("HTTP {} from {}: {}".format(exc.code, url, detail))
+    except urllib.error.URLError as exc:
+        raise BackendError("could not reach {}: {}".format(url, exc.reason))
+
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        raise BackendError("response was not JSON: {}".format(raw[:500]))
+
+    error = payload.get("error")
+    if error:
+        message = error.get("message") if isinstance(error, dict) else error
+        raise BackendError("API error: {}".format(message))
+    return payload
+
+
+def _extract_content(payload: dict) -> str:
+    """Pull the reply text out of a chat-completions response."""
+    choices = payload.get("choices")
+    if choices:
+        message = choices[0].get("message", {})
+    else:
+        # Some servers reply with a flat "message" object instead.
+        message = payload.get("message")
+
+    if not isinstance(message, dict):
+        raise BackendError("no content in response: {}".format(json.dumps(payload)[:500]))
+
+    content = (message.get("content") or "").strip()
+    if content:
+        return message["content"]
+
+    # Reasoning models can put everything in a separate channel and leave
+    # content empty. Splicing that silently would look like a model failure,
+    # so say what happened instead.
+    if message.get("reasoning_content") or message.get("reasoning"):
         raise BackendError(
-            "ollama exited {}: {}".format(proc.returncode, proc.stderr.strip())
+            "model returned reasoning but empty content; the endpoint is "
+            "putting the answer in 'reasoning_content'. Lower "
+            "--reasoning-effort or raise --max-tokens."
         )
-    return proc.stdout
+    raise BackendError("model returned empty content: {}".format(json.dumps(payload)[:500]))
+
+
+def _log_usage(payload: dict) -> None:
+    usage = payload.get("usage") or {}
+    if usage:
+        log(
+            ">> [Usage] prompt={} completion={} total={}".format(
+                usage.get("prompt_tokens", "?"),
+                usage.get("completion_tokens", "?"),
+                usage.get("total_tokens", "?"),
+            )
+        )
+    finish = (payload.get("choices") or [{}])[0].get("finish_reason")
+    if finish and finish not in ("stop", "eos"):
+        log(">> [Warn] finish_reason={} — output may be truncated".format(finish))
 
 
 # --------------------------------------------------------------------------
@@ -79,10 +148,11 @@ def resolve_profile(
     api_url: Optional[str] = None,
     model: Optional[str] = None,
 ):
-    """Work out which endpoint and model to talk to.
+    """Work out which endpoint, model and key to talk to.
 
     Precedence, highest first: explicit CLI arguments, the real environment,
-    then llm-models.env. A profile named `foo` reads FOO_API_URL / FOO_MODEL.
+    then llm-models.env. A profile named `foo` reads FOO_API_URL / FOO_MODEL /
+    FOO_API_KEY.
     """
     file_env = load_env_file()
 
@@ -94,6 +164,7 @@ def resolve_profile(
 
     api_url = api_url or lookup("API_URL") or lookup("{}_API_URL".format(prefix))
     model = model or lookup("LLM_MODEL") or lookup("{}_MODEL".format(prefix))
+    api_key = lookup("{}_API_KEY".format(prefix)) or lookup("API_KEY")
 
     if not api_url:
         raise BackendError(
@@ -105,19 +176,7 @@ def resolve_profile(
             "model is not set for profile '{}'. Set LLM_MODEL or {}_MODEL "
             "in {} or the environment.".format(profile, prefix, paths.ENV_FILE)
         )
-    return profile, api_url, model
-
-
-def _extract_content(payload: dict) -> str:
-    """Pull the reply text out of an OpenAI- or Ollama-shaped response."""
-    choices = payload.get("choices")
-    if choices:
-        return choices[0].get("message", {}).get("content", "")
-    # Ollama's native /api/chat uses a flat "message" object instead.
-    message = payload.get("message")
-    if isinstance(message, dict):
-        return message.get("content", "")
-    raise BackendError("no content in response: {}".format(json.dumps(payload)[:500]))
+    return profile, api_url, model, api_key
 
 
 def run_remote(
@@ -125,44 +184,31 @@ def run_remote(
     profile: Optional[str] = None,
     api_url: Optional[str] = None,
     model: Optional[str] = None,
+    params: Optional[GenParams] = None,
 ) -> str:
     """POST `prompt` to a chat-completions endpoint and return the reply."""
-    profile, api_url, model = resolve_profile(profile, api_url, model)
+    profile, api_url, model, api_key = resolve_profile(profile, api_url, model)
+    params = params or GenParams()
 
-    body = json.dumps(
-        {
-            "model": model,
-            "messages": [{"role": "user", "content": prompt}],
-            "stream": False,
-        }
-    ).encode()
+    body: Dict[str, Any] = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "stream": False,
+    }
+    # Absent knobs are left out entirely rather than sent as null, since some
+    # OpenAI-compatible servers reject unknown or null fields.
+    body.update(params.as_dict())
 
-    request = urllib.request.Request(
-        api_url,
-        data=body,
-        headers={"Content-Type": "application/json"},
-        method="POST",
+    headers = {}
+    if api_key:
+        headers["Authorization"] = "Bearer {}".format(api_key)
+
+    log(
+        ">> [Info] Querying remote LLM ({} @ {}) [{}]...".format(
+            model, api_url, params.describe()
+        )
     )
-
-    log(">> [Info] Querying remote LLM ({} @ {})...".format(model, api_url))
-    try:
-        with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT) as response:
-            raw = response.read().decode()
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode(errors="replace")[:500]
-        raise BackendError("HTTP {} from {}: {}".format(exc.code, api_url, detail))
-    except urllib.error.URLError as exc:
-        raise BackendError("could not reach {}: {}".format(api_url, exc.reason))
-
-    try:
-        payload = json.loads(raw)
-    except json.JSONDecodeError:
-        raise BackendError("response was not JSON: {}".format(raw[:500]))
-
-    error = payload.get("error")
-    if error:
-        message = error.get("message") if isinstance(error, dict) else error
-        raise BackendError("API error: {}".format(message))
+    payload = _post_json(api_url, body, headers)
 
     log(
         ">> [API Log] Profile: {} | Model: {} | Fingerprint: {}".format(
@@ -171,4 +217,5 @@ def run_remote(
             payload.get("system_fingerprint", "N/A"),
         )
     )
+    _log_usage(payload)
     return _extract_content(payload)
