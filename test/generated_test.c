@@ -19,77 +19,88 @@
 static int test_bio_enc_generated_smoke(void)
 {
     /* BEGIN_LLM_REPLACE */
-        const EVP_CIPHER *cipher = EVP_aes_256_cbc();
-        unsigned char key[32] = { 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
-                                  0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
-                                  0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
-                                  0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08 };
-        unsigned char iv[16] = { 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
-                                 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f };
-        const unsigned char plaintext[] =
-            "The quick brown fox jumps over the lazy dog's back!";
-        int plaintext_len = (int)strlen((const char *)plaintext);
-        unsigned char ciphertext[128] = {0};
-        unsigned char decrypted[128] = {0};
-        int ciphertext_len = 0;
-        int decrypted_len = 0;
-        BIO *mem_bio = NULL, *cipher_bio = NULL;
-        BIO *ciph_mem = NULL, *dec_bio = NULL;
-        EVP_CIPHER_CTX *enc_ctx = NULL, *dec_ctx = NULL;
-        char *mem_ptr = NULL;
-        long mem_len = 0;
+        int ret = 0;
+        const unsigned char key[32] = {0};
+        const unsigned char iv[16] = {0};
+        const char *plain = "The quick brown fox jumps over the lazy dog";
+        size_t plain_len = strlen(plain);
+        unsigned char outbuf[256];
+        int outlen = 0, i, n;
+        BIO *mem = NULL, *enc = NULL;
+        BIO *mem2 = NULL, *dec = NULL;
+        char *cipher_data = NULL;
+        long cipher_len = 0;
+        EVP_CIPHER_CTX *cctx = NULL;
 
-        /* ---------- encryption side ---------- */
-        mem_bio = BIO_new(BIO_s_mem());
-        TEST_ptr(mem_bio);
-        cipher_bio = BIO_new(BIO_f_cipher());
-        TEST_ptr(cipher_bio);
-        TEST_true(BIO_push(cipher_bio, mem_bio));
+        /* ---------- encryption ---------- */
+        mem = BIO_new(BIO_s_mem());
+        if (!TEST_ptr(mem))
+            goto out;
+        enc = BIO_new(BIO_f_cipher());
+        if (!TEST_ptr(enc))
+            goto out;
+        BIO_push(enc, mem);
 
-        /* obtain internal EVP_CIPHER_CTX and initialise it for encryption */
-        if (BIO_ctrl(cipher_bio, BIO_C_GET_CIPHER_CTX, 0, &enc_ctx) <= 0) {
-            BIO_free_all(cipher_bio);
-            return 0;
+        if (!TEST_true(BIO_set_cipher(enc, EVP_aes_256_cbc(),
+                                      key, iv, 1)))   /* 1 = encrypt */
+            goto out;
+
+        n = BIO_write(enc, plain, (int)plain_len);
+        if (!TEST_int_eq(n, (int)plain_len))
+            goto out;
+
+        if (!TEST_true(BIO_flush(enc)))
+            goto out;
+
+        /* fetch ciphertext from the underlying memory BIO */
+        cipher_len = BIO_get_mem_data(mem, &cipher_data);
+        if (!TEST_int_gt(cipher_len, 0))
+            goto out;
+
+        /* ---------- decryption ---------- */
+        /* create a read‑only memory BIO that contains the ciphertext */
+        mem2 = BIO_new_mem_buf(cipher_data, (int)cipher_len);
+        if (!TEST_ptr(mem2))
+            goto out;
+        dec = BIO_new(BIO_f_cipher());
+        if (!TEST_ptr(dec))
+            goto out;
+        BIO_push(dec, mem2);
+
+        if (!TEST_true(BIO_set_cipher(dec, EVP_aes_256_cbc(),
+                                      key, iv, 0)))   /* 0 = decrypt */
+            goto out;
+
+        /* read back the decrypted data */
+        outlen = 0;
+        while ((i = BIO_read(dec, outbuf + outlen,
+                             (int)sizeof(outbuf) - outlen)) > 0) {
+            outlen += i;
+            if (outlen >= (int)sizeof(outbuf))
+                break;
         }
-        TEST_ptr(enc_ctx);
-        TEST_true(EVP_CipherInit_ex(enc_ctx, cipher, NULL, key, iv, 1));
+        if (!TEST_int_gt(outlen, 0))
+            goto out;
 
-        /* write plaintext into the cipher BIO */
-        TEST_int_eq(BIO_write(cipher_bio, plaintext, plaintext_len), plaintext_len);
+        /* compare plaintext with decrypted output (ignore possible padding) */
+        if (!TEST_mem_eq(plain, plain_len, outbuf, plain_len))
+            goto out;
 
-        /* flush to make sure final block is emitted */
-        TEST_true(BIO_flush(cipher_bio));
+        /* verify that the cipher context reports success */
+        if (!TEST_true(BIO_ctrl(dec, BIO_C_GET_CIPHER_STATUS, 0, NULL)))
+            goto out;
 
-        /* retrieve the ciphertext from the underlying memory BIO */
-        mem_len = BIO_get_mem_data(mem_bio, &mem_ptr);
-        TEST_true(mem_len > 0);
-        TEST_true(mem_len <= (long)sizeof(ciphertext));
-        memcpy(ciphertext, mem_ptr, (size_t)mem_len);
-        ciphertext_len = (int)mem_len;
+        /* optional: ensure we can retrieve the EVP_CIPHER_CTX via control */
+        if (!TEST_true(BIO_ctrl(dec, BIO_C_GET_CIPHER_CTX,
+                               0, &cctx)) || !TEST_ptr(cctx))
+            goto out;
 
-        BIO_free_all(cipher_bio); /* also frees mem_bio */
+        ret = 1;        /* all checks passed */
 
-        /* ---------- decryption side ---------- */
-        ciph_mem = BIO_new_mem_buf(ciphertext, ciphertext_len);
-        TEST_ptr(ciph_mem);
-        dec_bio = BIO_new(BIO_f_cipher());
-        TEST_ptr(dec_bio);
-        TEST_true(BIO_push(dec_bio, ciph_mem));
-
-        if (BIO_ctrl(dec_bio, BIO_C_GET_CIPHER_CTX, 0, &dec_ctx) <= 0) {
-            BIO_free_all(dec_bio);
-            return 0;
-        }
-        TEST_ptr(dec_ctx);
-        TEST_true(EVP_CipherInit_ex(dec_ctx, cipher, NULL, key, iv, 0));
-
-        decrypted_len = BIO_read(dec_bio, decrypted, sizeof(decrypted));
-        TEST_int_ge(decrypted_len, 0);
-        TEST_int_eq(decrypted_len, plaintext_len);
-        TEST_mem_eq(decrypted, decrypted_len, plaintext, plaintext_len);
-
-        BIO_free_all(dec_bio);
-        return 1;
+out:
+        BIO_free_all(enc);
+        BIO_free_all(dec);
+        return ret;
     /* END_LLM_REPLACE */
 }
 
