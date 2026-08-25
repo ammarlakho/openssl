@@ -13,6 +13,16 @@ docker_run() {
         "$IMAGE" "$@"
 }
 
+log_timing() {
+    local start=$1
+    local operation=$2
+    local end=$(date +%s%N)
+    local elapsed=$(( (end - start) / 1000000 ))
+    local seconds=$(( elapsed / 1000 ))
+    local millis=$(( elapsed % 1000 ))
+    printf ">> [Timing] %s completed in %d.%03ds\n" "$operation" $seconds $millis
+}
+
 build() {
     docker build -t "$IMAGE" "$CURRENT_DIR"
 }
@@ -23,6 +33,7 @@ make_clean() {
 
 # Compile for running tests (without coverage)
 compile() {
+    local start=$(date +%s%N)
     make_clean
     docker_run ./config -O0 \
         -fpass-plugin=/usr/lib/mull-ir-frontend-18 \
@@ -30,10 +41,12 @@ compile() {
         -g -grecord-command-line
     docker_run bash -c 'make -s build_generated -j"$(nproc)"'
     docker_run bash -c 'make -s ./test/bio_enc_test -j"$(nproc)"'
+    log_timing "$start" "compile"
 }
 
 # Compile for running mutation tests (with coverage)
 compile-cov() {
+    local start=$(date +%s%N)
     make_clean
     local test="${1:-./test/bio_enc_test}"
     docker_run ./config no-shared -O0 \
@@ -43,28 +56,37 @@ compile-cov() {
     docker_run bash -c 'make -s build_generated -j"$(nproc)"'
     echo "Building test binary: $test"
     docker_run bash -c "make -s $test -j\"\$(nproc)\""
+    log_timing "$start" "compile-cov"
 }
 
 mutate() {
+    local start=$(date +%s%N)
     local test="${1:-./test/bio_enc_test}"
     echo "Running mutation testing against: $test"
     docker_run mull-runner-18 "$test"
+    log_timing "$start" "mutate"
 }
 
 # Compile for running tests
 compile-normal() {
+    local start=$(date +%s%N)
     docker_run ./config
     docker_run bash -c 'make -s -j"$(nproc)"'
+    log_timing "$start" "compile-normal"
 }
 
 # Run ALL tests
 test-all() {
+    local start=$(date +%s%N)
     docker_run bash -c 'make test'
+    log_timing "$start" "test-all"
 }
 
 # Run a specific recipe by name, e.g.: ./mull.sh test-recipe test_evp/test_rsa (recipe name without the number- prefix)
 test-recipe() {
+    local start=$(date +%s%N)
     docker_run bash -c "make test TESTS=$1"
+    log_timing "$start" "test-recipe"
 }
 
 shell() {
