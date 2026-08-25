@@ -1,8 +1,9 @@
 #!/bin/bash
 
 IMAGE=mull-openssl
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$CURRENT_DIR/../.." && pwd)"
+SCRIPTS_DIR="$REPO_ROOT/thesis-work/scripts"
 MULL_CONFIG_PATH="/openssl/thesis-work/mull-mutation/mull.yml"
 
 docker_run() {
@@ -13,7 +14,7 @@ docker_run() {
 }
 
 build() {
-    docker build -t "$IMAGE" "$SCRIPT_DIR"
+    docker build -t "$IMAGE" "$CURRENT_DIR"
 }
 
 make_clean() {
@@ -33,6 +34,7 @@ compile() {
 
 # Compile for running mutation tests (with coverage)
 compile-cov() {
+    make_clean
     local test="${1:-./test/bio_enc_test}"
     docker_run ./config no-shared -O0 \
         -fpass-plugin=/usr/lib/mull-ir-frontend-18 \
@@ -69,6 +71,11 @@ shell() {
     docker run --rm -it -v "$REPO_ROOT:/openssl" -w /openssl "$IMAGE" bash
 }
 
+# ./mull.sh register-test generated_test_cursor
+register-test() {
+    python3 "$SCRIPTS_DIR/register_test.py" "$@"
+}
+
 case "$1" in
     build)       build ;;
     make_clean)  make_clean ;;
@@ -82,8 +89,9 @@ case "$1" in
     test-all)    test-all ;;
     test-recipe) test-recipe "$2" ;;
     docker-run) shift; docker_run "$@" ;;
+    register-test)    shift; register-test "$@" ;;
     *)
-        echo "Usage: ./mull-mutation/mull.sh [build|make_clean|compile|compile-cov|mutate|shell|run|run-cov] [test]"
+        echo "Usage: ./mull-mutation/mull.sh [build|make_clean|compile|compile-cov|mutate|shell|run|run-cov|add-test] [test]"
         echo ""
         echo "  build        Build toolchain image (Mull + clang; no OpenSSL compile)"
         echo "  make_clean   Run make clean inside the container"
@@ -97,5 +105,7 @@ case "$1" in
         echo "  run-cov      compile-cov + mutate (optional test arg)"
         echo "  test-all     Run all tests"
         echo "  test-recipe  Run a specific recipe by name, e.g.: ./mull.sh test-recipe test_evp"
+        echo "  register-test     Register a new standalone test binary in test/build.info"
+        echo "               e.g.: ./mull.sh add-test generated_test_cursor"
         ;;
 esac

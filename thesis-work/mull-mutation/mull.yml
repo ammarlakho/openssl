@@ -1,4 +1,13 @@
 mutators:
   - cxx_add_to_sub
+  - cxx_eq_to_ne
+  - cxx_ge_to_lt
+  - cxx_le_to_gt
+  - cxx_ge_to_gt
+  - cxx_le_to_lt
+  - cxx_assign_const
+  - cxx_init_const
+  - cxx_remove_void_call
+  - cxx_and_to_or
 excludePaths:
   - .*testutil.*
