@@ -5,6 +5,7 @@ Subcommands:
   context   print the assembled prompt without calling a model
   stub      print a fresh test .c skeleton
   fill      splice a generated body into an existing stub
+  sweep     run a grid of sampling parameters, one saved test per point
 """
 
 import argparse
@@ -12,7 +13,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import backends, paths, stub
+from . import backends, buildinfo, paths, stub, sweep
 from .context import ContextError, ContextOptions, build_contract_only, build_prompt
 from .backends import BackendError, GenParams
 from .stub import StubError
@@ -78,6 +79,21 @@ def _params_parser() -> argparse.ArgumentParser:
         default=None,
         help="reasoning models (gpt-oss); ignored by servers that do not support it",
     )
+    parser.add_argument(
+        "--frequency-penalty",
+        type=float,
+        default=None,
+        help="OpenAI repetition knob (~-2..2, 0=off). Ollama maps it onto "
+             "llama.cpp's repeat_penalty; vLLM implements it natively",
+    )
+    parser.add_argument("--presence-penalty", type=float, default=None)
+    parser.add_argument(
+        "--repetition-penalty",
+        type=float,
+        default=None,
+        help="vLLM-only multiplicative repetition penalty (~1.0..2.0, 1.0=off); "
+             "ignored by servers that do not know the field",
+    )
     return parser
 
 
@@ -88,6 +104,9 @@ def _params_from(args: argparse.Namespace) -> GenParams:
         seed=args.seed,
         max_tokens=args.max_tokens,
         reasoning_effort=args.reasoning_effort,
+        frequency_penalty=args.frequency_penalty,
+        presence_penalty=args.presence_penalty,
+        repetition_penalty=args.repetition_penalty,
     )
 
 
@@ -140,6 +159,41 @@ def build_parser() -> argparse.ArgumentParser:
         "--source",
         default=None,
         help="source under test; its API symbols decide the stub's includes",
+    )
+
+    sw = sub.add_parser(
+        "sweep",
+        help="run a grid of sampling parameters, saving one test per point",
+    )
+    sw.add_argument("config", nargs="?", help="sweep config JSON (see thesis-work/sweeps/)")
+    sw.add_argument(
+        "--grid",
+        action="append",
+        default=[],
+        metavar="AXIS=V1,V2",
+        help="override one grid axis, repeatable "
+             "(e.g. --grid temperature=0.2,0.8 --grid seed=1,2,3)",
+    )
+    sw.add_argument("--source", help="override the source under test")
+    sw.add_argument("--task", help="override the scenario description")
+    sw.add_argument("--test-fn", help="override the test function name")
+    sw.add_argument("--prefix", help="override the leading name component")
+    sw.add_argument("--model", help="override the model name")
+    sw.add_argument("--profile", help="endpoint profile name")
+    sw.add_argument("--api-url", help="endpoint URL, overriding the profile")
+    sw.add_argument("--repeats", type=int, default=None, help="runs per grid point")
+    sw.add_argument("--sleep", type=float, default=None, help="seconds between calls")
+    sw.add_argument("--limit", type=int, default=None, help="stop after N runs")
+    sw.add_argument("--out-dir", default=None, help="override test/generated")
+    sw.add_argument(
+        "--no-register",
+        action="store_true",
+        help="skip the test/build.info entry for each generated test",
+    )
+    sw.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="print the planned runs and their names; call no model, write nothing",
     )
 
     fill = sub.add_parser("fill", help="splice a generated body into a stub")
@@ -200,8 +254,39 @@ def cmd_generate(args: argparse.Namespace) -> None:
     backends.log(">> [Timing] Completed in {:.1f}s".format(time.monotonic() - started))
 
 
+def cmd_sweep(args: argparse.Namespace) -> None:
+    config = sweep.load_config(args.config)
+    for key in ("source", "task", "test_fn", "prefix", "model", "profile",
+                "api_url", "repeats", "sleep"):
+        value = getattr(args, key, None)
+        if value is not None:
+            config[key] = value
+
+    results = sweep.run_sweep(
+        config,
+        grid_override=sweep.parse_grid_override(args.grid),
+        dry_run=args.dry_run,
+        limit=args.limit,
+        register=not args.no_register,
+        out_dir=args.out_dir,
+    )
+
+    if args.dry_run:
+        for record in results:
+            print("{:>3}  {}".format(record["index"], record["name"]))
+        print("{} run(s) planned; nothing was sent or written".format(len(results)))
+        return
+
+    failed = [r for r in results if not r.get("ok")]
+    for record in failed:
+        print("FAILED {}: {}".format(record["name"], record["error"]), file=sys.stderr)
+    if failed:
+        raise BackendError("{}/{} run(s) failed".format(len(failed), len(results)))
+
+
 COMMANDS = {
     "generate": cmd_generate,
+    "sweep": cmd_sweep,
     "context": cmd_context,
     "stub": cmd_stub,
     "fill": cmd_fill,
@@ -212,7 +297,8 @@ def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     try:
         COMMANDS[args.command](args)
-    except (ContextError, BackendError, StubError) as exc:
+    except (ContextError, BackendError, StubError, sweep.SweepError,
+            buildinfo.BuildInfoError) as exc:
         print("llm_test: {}".format(exc), file=sys.stderr)
         return 1
     return 0

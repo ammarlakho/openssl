@@ -39,6 +39,20 @@ class GenParams:
     max_tokens: Optional[int] = None
     # gpt-oss and other reasoning models: "low" | "medium" | "high".
     reasoning_effort: Optional[str] = None
+    # Repetition control. Two spellings, because the two servers in use do not
+    # agree on one:
+    #   frequency_penalty  -- the OpenAI field. Ollama's /v1 layer maps it onto
+    #                         llama.cpp's repeat_penalty; vLLM implements it
+    #                         natively. Portable, so prefer it. Range ~[-2, 2],
+    #                         0 = off.
+    #   repetition_penalty -- vLLM's own multiplicative knob, sent as an extra
+    #                         top-level field. Range ~[1.0, 2.0], 1.0 = off.
+    #                         Ignored by servers that do not know it.
+    # There is no "repeat_penalty" field on either OpenAI-compatible endpoint:
+    # that name belongs to llama.cpp / Ollama's native /api/generate options.
+    frequency_penalty: Optional[float] = None
+    presence_penalty: Optional[float] = None
+    repetition_penalty: Optional[float] = None
 
     def as_dict(self) -> Dict[str, Any]:
         """Only the fields that were actually set."""

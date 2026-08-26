@@ -14,7 +14,9 @@ llmtest/context.py     prompt assembly (source + reference tests + rules)
 llmtest/stub.py        test .c skeleton generation and splicing
 llmtest/backends.py    HTTP client for the chat-completions endpoint
 llmtest/cli.py         argument parsing and command dispatch
-register_test.py       register a new test binary in test/build.info
+llmtest/sweep.py       parameter sweeps: one saved test per grid point
+llmtest/buildinfo.py   test/build.info registration
+register_test.py       CLI wrapper around llmtest/buildinfo.py
 ```
 
 Paths you pass are resolved against the repo root, so the commands below work
@@ -28,6 +30,7 @@ from any directory.
 | `context`  | Print the assembled prompt without calling a model |
 | `stub`     | Print a fresh test `.c` skeleton |
 | `fill`     | Splice a generated body into an existing stub |
+| `sweep`    | Run a grid of sampling parameters, saving one test per point |
 
 ## Workflow: snippet mode (recommended)
 
@@ -63,6 +66,104 @@ from any directory.
 
 Run `generate` with no arguments at all to apply the default AES-256 scenario
 above (snippet mode, `crypto/evp/bio_enc.c`, into `test/generated_test.c`).
+
+## Workflow: parameter sweeps
+
+`sweep` runs one generation per point of a sampling-parameter grid and saves
+each result as a self-contained directory under `test/generated/`:
+
+```
+test/generated/<name>/
+    <name>.c        the filled stub -- this is what the build compiles
+    meta.json       model, endpoint, every sampling knob, timing, outcome
+    prompt.txt      the exact prompt that was sent
+    response.txt    the raw model reply, before splicing/sanitising
+test/generated/runs.jsonl   one line per run, appended across sweeps
+```
+
+The name encodes the model, the knobs and a timestamp, so a directory listing
+is already a readable result table:
+
+```
+gen_gpt_oss_120b_t0p8_tp0p95_fp0p3_s2_260826_193502
+ |    |            |     |      |    |  |
+ |    model        temp  top_p  freq |  run start (yymmdd_HHMMSS)
+ prefix                        penalty seed
+```
+
+Only `[a-z0-9_]` is used, because the name is also a make target and a C
+filename (`.` becomes `p`: `0.8` -> `0p8`). Each successful run is registered
+in `test/build.info` with `SOURCE[<name>]=generated/<name>/<name>.c`, so
+`make test/<name>` and `./mull.sh mutate ./test/<name>` work straight away.
+
+Runs are independent: one failure is recorded in that run's `meta.json` and the
+sweep carries on. Failed runs are not registered, and `sweep` exits non-zero if
+any run failed.
+
+### Running one
+
+```bash
+./thesis-work/scripts/llm_test.py sweep thesis-work/sweeps/bio_enc.json --dry-run
+./thesis-work/scripts/llm_test.py sweep thesis-work/sweeps/bio_enc.json
+```
+
+`--dry-run` prints the planned runs and their names without calling the model
+or writing anything -- worth doing first, since a full grid is a lot of runs.
+
+### The config
+
+Changing parameters is a config edit, not a code edit. Copy
+`thesis-work/sweeps/bio_enc.json` and adjust:
+
+```json
+{
+  "source": "crypto/evp/bio_enc.c",
+  "task": "AES-256 CBC BIO round-trip vs fixed vectors",
+  "test_fn": "test_bio_enc_generated",
+  "prefix": "gen",
+  "profile": "gptoss",
+  "snippet": true,
+  "repeats": 1,
+  "sleep": 0,
+  "context": { "refs": 4, "lines": 50, "keywords": [] },
+  "grid": {
+    "temperature": [0.2, 0.8, 1.0],
+    "top_p": [0.95],
+    "frequency_penalty": [0.0, 0.3],
+    "seed": [1, 2, 3]
+  }
+}
+```
+
+`grid` is a full cartesian product (the example above is 3x1x2x3 = 18 runs).
+Axes: `temperature`, `top_p`, `frequency_penalty`, `presence_penalty`,
+`repetition_penalty`, `seed`, `max_tokens`, `reasoning_effort`. Omit an axis to
+leave it at the server default. `repeats` re-runs every grid point N times
+(useful for measuring run-to-run variance at a fixed temperature); the copies
+get an `_rN` component in their names.
+
+`test_fn` defaults to `test_<source stem>_generated`, and `context` takes the
+prompt options below (`refs`, `lines`, `keywords`, `impl_lines`, `notes`).
+
+### Sweep flags
+
+| Flag | Meaning |
+|------|---------|
+| `--dry-run` | Print the planned runs; call no model, write nothing |
+| `--grid AXIS=V1,V2` | Override one grid axis; repeatable |
+| `--limit N` | Stop after N runs |
+| `--repeats N` / `--sleep S` | Override the config |
+| `--profile` / `--model` / `--api-url` | Override the endpoint |
+| `--source` / `--task` / `--test-fn` / `--prefix` | Override the scenario |
+| `--out-dir DIR` | Write somewhere other than `test/generated` |
+| `--no-register` | Skip the `test/build.info` entries |
+
+So a one-off variation needs no new config file:
+
+```bash
+./thesis-work/scripts/llm_test.py sweep thesis-work/sweeps/bio_enc.json \
+  --profile gemma --grid temperature=0.7 --grid seed=1,2,3,4,5 --prefix gemma
+```
 
 ## Full module (single shot)
 
@@ -136,6 +237,23 @@ defaults apply.
 | `--seed N` | Sampling seed, where the server honours it |
 | `--max-tokens N` | Cap on generated tokens; raise if output comes back truncated |
 | `--reasoning-effort low\|medium\|high` | Reasoning models (gpt-oss) |
+| `--frequency-penalty F` | OpenAI repetition penalty, ~-2..2, 0 = off |
+| `--presence-penalty F` | OpenAI presence penalty, ~-2..2, 0 = off |
+| `--repetition-penalty F` | vLLM-only multiplicative penalty, ~1.0..2.0, 1.0 = off |
+
+### A note on repetition penalties
+
+There is no `repeat_penalty` field on either endpoint in `llm-models.env`:
+that name belongs to llama.cpp and Ollama's *native* `/api/generate` options,
+not to the OpenAI-compatible `/v1/chat/completions` route both profiles use.
+The portable spelling is `frequency_penalty` -- Ollama's `/v1` layer maps it
+onto llama.cpp's `repeat_penalty`, and vLLM implements it natively. vLLM also
+accepts its own `repetition_penalty` as an extra top-level field; Ollama
+ignores unknown fields, so sending it is harmless but has no effect there.
+Prefer `frequency_penalty` for anything compared across both models.
+
+`seed` is honoured by both servers; `reasoning_effort` only means something to
+gpt-oss.
 
 Token usage and a truncation warning are logged to stderr on every call.
 
