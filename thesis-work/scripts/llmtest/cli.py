@@ -5,7 +5,9 @@ Subcommands:
   context   print the assembled prompt without calling a model
   stub      print a fresh test .c skeleton
   fill      splice a generated body into an existing stub
-  sweep     run a grid of sampling parameters, one saved test per point
+  experiment  run a grid of sampling parameters, one saved test per point
+  mutate    run Mull over generated tests and record the scores
+  mutation-report  print the recorded scores as a table or CSV
 """
 
 import argparse
@@ -13,7 +15,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import backends, buildinfo, paths, stub, sweep
+from . import backends, buildinfo, experiment, mutation, paths, stub
 from .context import ContextError, ContextOptions, build_contract_only, build_prompt
 from .backends import BackendError, GenParams
 from .stub import StubError
@@ -161,12 +163,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="source under test; its API symbols decide the stub's includes",
     )
 
-    sw = sub.add_parser(
-        "sweep",
+    ex = sub.add_parser(
+        "experiment",
         help="run a grid of sampling parameters, saving one test per point",
     )
-    sw.add_argument("config", nargs="?", help="sweep config JSON (see thesis-work/sweeps/)")
-    sw.add_argument(
+    ex.add_argument("config", nargs="?", help="experiment config JSON (see thesis-work/experiments/configs/)")
+    ex.add_argument(
         "--grid",
         action="append",
         default=[],
@@ -174,26 +176,98 @@ def build_parser() -> argparse.ArgumentParser:
         help="override one grid axis, repeatable "
              "(e.g. --grid temperature=0.2,0.8 --grid seed=1,2,3)",
     )
-    sw.add_argument("--source", help="override the source under test")
-    sw.add_argument("--task", help="override the scenario description")
-    sw.add_argument("--test-fn", help="override the test function name")
-    sw.add_argument("--prefix", help="override the leading name component")
-    sw.add_argument("--model", help="override the model name")
-    sw.add_argument("--profile", help="endpoint profile name")
-    sw.add_argument("--api-url", help="endpoint URL, overriding the profile")
-    sw.add_argument("--repeats", type=int, default=None, help="runs per grid point")
-    sw.add_argument("--sleep", type=float, default=None, help="seconds between calls")
-    sw.add_argument("--limit", type=int, default=None, help="stop after N runs")
-    sw.add_argument("--out-dir", default=None, help="override test/generated")
-    sw.add_argument(
+    ex.add_argument("--source", help="override the source under test")
+    ex.add_argument("--task", help="override the scenario description")
+    ex.add_argument("--test-fn", help="override the test function name")
+    ex.add_argument("--prefix", help="override the leading name component")
+    ex.add_argument("--model", help="override the model name")
+    ex.add_argument("--profile", help="endpoint profile name")
+    ex.add_argument("--api-url", help="endpoint URL, overriding the profile")
+    ex.add_argument("--repeats", type=int, default=None, help="runs per grid point")
+    ex.add_argument("--sleep", type=float, default=None, help="seconds between calls")
+    ex.add_argument("--limit", type=int, default=None, help="stop after N runs")
+    ex.add_argument("--out-dir", default=None, help="override test/generated")
+    ex.add_argument(
         "--no-register",
         action="store_true",
         help="skip the test/build.info entry for each generated test",
     )
-    sw.add_argument(
+    ex.add_argument(
         "--dry-run",
         action="store_true",
         help="print the planned runs and their names; call no model, write nothing",
+    )
+
+    runs = sub.add_parser("runs", help="list the runs saved under test/generated")
+    runs.add_argument("--out-dir", default=None, help="override test/generated")
+
+    pr = sub.add_parser(
+        "prune",
+        help="delete runs: their directory and their build.info entries",
+    )
+    pr.add_argument("names", nargs="*", help="run names to delete")
+    pr.add_argument("--all", action="store_true", help="delete every run")
+    pr.add_argument("--failed", action="store_true", help="delete runs whose generation failed")
+    pr.add_argument("--out-dir", default=None, help="override test/generated")
+    pr.add_argument(
+        "--keep-index",
+        action="store_true",
+        help="leave runs.jsonl alone instead of dropping the pruned runs from it",
+    )
+    pr.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="print what would be deleted; delete nothing",
+    )
+
+    mut = sub.add_parser(
+        "mutate",
+        help="build and mutation-test generated tests, recording each score",
+    )
+    mut.add_argument("names", nargs="*", help="run names (default: --all)")
+    mut.add_argument("--all", action="store_true", help="every successful run")
+    mut.add_argument("--out-dir", default=None, help="override test/generated")
+    mut.add_argument(
+        "--no-configure",
+        action="store_true",
+        help="skip the coverage reconfigure; the tree is already built for it",
+    )
+    mut.add_argument(
+        "--no-build",
+        action="store_true",
+        help="skip make; the test binaries already exist",
+    )
+    mut.add_argument(
+        "--rerun",
+        choices=sorted(mutation.RERUN_MODES),
+        default="none",
+        help="which already-recorded tests to run again: none (default, skip "
+             "anything with a record), failed, scored, or all",
+    )
+
+    rep = sub.add_parser(
+        "mutation-report",
+        help="print the scores recorded under thesis-work/experiments/results",
+    )
+    rep.add_argument(
+        "--csv",
+        action="store_true",
+        help="print the running CSV record (thesis-work/experiments/results/results.csv)",
+    )
+    rep.add_argument(
+        "--rebuild-csv",
+        action="store_true",
+        help="regenerate that CSV from results.jsonl, which is the source of truth",
+    )
+    rep.add_argument(
+        "--history",
+        action="store_true",
+        help="every recorded run, not just the newest per test",
+    )
+    rep.add_argument(
+        "--survivors",
+        metavar="NAME",
+        help="list the surviving mutants of one recorded run",
     )
 
     fill = sub.add_parser("fill", help="splice a generated body into a stub")
@@ -254,17 +328,17 @@ def cmd_generate(args: argparse.Namespace) -> None:
     backends.log(">> [Timing] Completed in {:.1f}s".format(time.monotonic() - started))
 
 
-def cmd_sweep(args: argparse.Namespace) -> None:
-    config = sweep.load_config(args.config)
+def cmd_experiment(args: argparse.Namespace) -> None:
+    config = experiment.load_config(args.config)
     for key in ("source", "task", "test_fn", "prefix", "model", "profile",
                 "api_url", "repeats", "sleep"):
         value = getattr(args, key, None)
         if value is not None:
             config[key] = value
 
-    results = sweep.run_sweep(
+    results = experiment.run_experiment(
         config,
-        grid_override=sweep.parse_grid_override(args.grid),
+        grid_override=experiment.parse_grid_override(args.grid),
         dry_run=args.dry_run,
         limit=args.limit,
         register=not args.no_register,
@@ -284,9 +358,105 @@ def cmd_sweep(args: argparse.Namespace) -> None:
         raise BackendError("{}/{} run(s) failed".format(len(failed), len(results)))
 
 
+def cmd_runs(args: argparse.Namespace) -> None:
+    records = experiment.list_runs(args.out_dir)
+    if not records:
+        print("no runs under {}".format(args.out_dir or experiment.OUT_DIR))
+        return
+    for record in records:
+        print("{}  {:>4}  {}".format(
+            "????" if record.get("_incomplete") else ("ok  " if record.get("ok") else "FAIL"),
+            "{}s".format(record.get("duration_s") or "?"),
+            record["name"]))
+    print("{} run(s) under {}".format(len(records), args.out_dir or experiment.OUT_DIR))
+
+
+def cmd_prune(args: argparse.Namespace) -> None:
+    if not args.names and not args.all and not args.failed:
+        raise experiment.ExperimentError("prune needs run names, --all, or --failed")
+
+    removed = experiment.prune(
+        args.names,
+        all_runs=args.all,
+        failed_only=args.failed,
+        dry_run=args.dry_run,
+        keep_index=args.keep_index,
+        out_root=args.out_dir,
+    )
+    if args.dry_run:
+        print("{} run(s) would be deleted; nothing was touched".format(len(removed)))
+    elif removed:
+        print("deleted {} run(s); reconfigure happens on the next compile".format(len(removed)))
+
+
+def cmd_mutate(args: argparse.Namespace) -> None:
+    if not args.names and not args.all:
+        raise mutation.MutationError("mutate needs run names or --all")
+
+    results = mutation.run_batch(
+        args.names,
+        all_runs=args.all,
+        out_dir=args.out_dir,
+        configure=not args.no_configure,
+        build=not args.no_build,
+        rerun=args.rerun,
+    )
+    if not results:
+        return
+    print()
+    print(mutation.table(results))
+    failed = [r for r in results if not r.get("ok")]
+    print("{}/{} run(s) scored; appended to {} and {}".format(
+        len(results) - len(failed), len(results),
+        mutation.RESULTS.name, mutation.RESULTS_CSV))
+    if failed:
+        raise mutation.MutationError("{} run(s) failed".format(len(failed)))
+
+
+def cmd_mutation_report(args: argparse.Namespace) -> None:
+    if args.rebuild_csv:
+        path = mutation.rebuild_csv()
+        print("rebuilt {} from {} run(s)".format(
+            path, len(mutation.load_results(latest_only=False))))
+        return
+
+    if args.survivors:
+        record = next((r for r in mutation.load_results()
+                       if r["name"] == args.survivors), None)
+        if not record or not record.get("report"):
+            raise mutation.MutationError("no report for {}".format(args.survivors))
+        survivors = mutation.surviving_lines(
+            paths.REPO_ROOT / record["report"], record.get("source"))
+        for mutant in survivors:
+            print("{}:{}  {} -> {!r}".format(
+                mutant["file"], mutant["line"], mutant["mutator"], mutant["replacement"]))
+        print("{} surviving mutant(s)".format(len(survivors)))
+        return
+
+    if args.csv:
+        # The CSV is appended to as runs finish, so it is already the record;
+        # printing it beats re-deriving one and risking a second copy.
+        if not mutation.RESULTS_CSV.is_file():
+            print("no CSV yet at {} (run `mutate`, or --rebuild-csv)".format(
+                mutation.RESULTS_CSV))
+            return
+        sys.stdout.write(mutation.RESULTS_CSV.read_text())
+        return
+
+    records = mutation.load_results(latest_only=not args.history)
+    if not records:
+        print("no results under {}".format(mutation.MUTATION_DIR))
+        return
+    sys.stdout.write(mutation.table(records) + "\n")
+
+
 COMMANDS = {
     "generate": cmd_generate,
-    "sweep": cmd_sweep,
+    "experiment": cmd_experiment,
+    "runs": cmd_runs,
+    "prune": cmd_prune,
+    "mutate": cmd_mutate,
+    "mutation-report": cmd_mutation_report,
     "context": cmd_context,
     "stub": cmd_stub,
     "fill": cmd_fill,
@@ -297,8 +467,8 @@ def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     try:
         COMMANDS[args.command](args)
-    except (ContextError, BackendError, StubError, sweep.SweepError,
-            buildinfo.BuildInfoError) as exc:
+    except (ContextError, BackendError, StubError, experiment.ExperimentError,
+            mutation.MutationError, buildinfo.BuildInfoError) as exc:
         print("llm_test: {}".format(exc), file=sys.stderr)
         return 1
     return 0

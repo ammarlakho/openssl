@@ -1,0 +1,744 @@
+
+=== WHY_YOU_ARE_HERE ===
+
+Implement or extend automated tests **for behaviors implemented in SOURCE_UNDER_TEST** (crypto/evp/bio_enc.c).
+REFERENCE_TESTS are **other tests** copied in short excerpts: style and public API hints only—not a solution scaffold.
+**Snippet mode**: the STUB section below is the exact file being compiled. Its includes and setup_tests already exist; your output replaces only the BEGIN_LLM_REPLACE ... END_LLM_REPLACE block.
+
+Scenario: AES-256 CBC BIO round-trip vs fixed vectors
+
+=== SOURCE_UNDER_TEST (crypto/evp/bio_enc.c) ===
+
+/*
+ * Copyright 1995-2025 The OpenSSL Project Authors. All Rights Reserved.
+ *
+ * Licensed under the Apache License 2.0 (the "License").  You may not use
+ * this file except in compliance with the License.  You can obtain a copy
+ * in the file LICENSE in the source distribution or at
+ * https://www.openssl.org/source/license.html
+ */
+
+#define OPENSSL_SUPPRESS_DEPRECATED /* for BIO_get_callback */
+
+#include <stdio.h>
+#include <errno.h>
+#include "internal/cryptlib.h"
+#include <openssl/buffer.h>
+#include <openssl/evp.h>
+#include "internal/bio.h"
+
+static int enc_write(BIO *h, const char *buf, int num);
+static int enc_read(BIO *h, char *buf, int size);
+static long enc_ctrl(BIO *h, int cmd, long arg1, void *arg2);
+static int enc_new(BIO *h);
+static int enc_free(BIO *data);
+static long enc_callback_ctrl(BIO *h, int cmd, BIO_info_cb *fps);
+#define ENC_BLOCK_SIZE (1024 * 4)
+#define ENC_MIN_CHUNK (256)
+#define BUF_OFFSET (ENC_MIN_CHUNK + EVP_MAX_BLOCK_LENGTH)
+
+typedef struct enc_struct {
+    int buf_len;
+    int buf_off;
+    int cont; /* <= 0 when finished */
+    int finished;
+    int ok; /* bad decrypt */
+    EVP_CIPHER_CTX *cipher;
+    unsigned char *read_start, *read_end;
+    /*
+     * buf is larger than ENC_BLOCK_SIZE because EVP_DecryptUpdate can return
+     * up to a block more data than is presented to it
+     */
+    unsigned char buf[BUF_OFFSET + ENC_BLOCK_SIZE];
+} BIO_ENC_CTX;
+
+static const BIO_METHOD methods_enc = {
+    BIO_TYPE_CIPHER,
+    "cipher",
+    bwrite_conv,
+    enc_write,
+    bread_conv,
+    enc_read,
+    NULL, /* enc_puts, */
+    NULL, /* enc_gets, */
+    enc_ctrl,
+    enc_new,
+    enc_free,
+    enc_callback_ctrl,
+};
+
+const BIO_METHOD *BIO_f_cipher(void)
+{
+    return &methods_enc;
+}
+
+static int enc_new(BIO *bi)
+{
+    BIO_ENC_CTX *ctx;
+
+    if ((ctx = OPENSSL_zalloc(sizeof(*ctx))) == NULL)
+        return 0;
+
+    ctx->cipher = EVP_CIPHER_CTX_new();
+    if (ctx->cipher == NULL) {
+        OPENSSL_free(ctx);
+        return 0;
+    }
+    ctx->cont = 1;
+    ctx->ok = 1;
+    ctx->read_end = ctx->read_start = &(ctx->buf[BUF_OFFSET]);
+    BIO_set_data(bi, ctx);
+    BIO_set_init(bi, 1);
+
+    return 1;
+}
+
+static int enc_free(BIO *a)
+{
+    BIO_ENC_CTX *b;
+
+    if (a == NULL)
+        return 0;
+
+    b = BIO_get_data(a);
+    if (b == NULL)
+        return 0;
+
+    EVP_CIPHER_CTX_free(b->cipher);
+    OPENSSL_clear_free(b, sizeof(BIO_ENC_CTX));
+    BIO_set_data(a, NULL);
+    BIO_set_init(a, 0);
+
+    return 1;
+}
+
+static int enc_read(BIO *b, char *out, int outl)
+{
+    int ret = 0, i, blocksize;
+    BIO_ENC_CTX *ctx;
+    BIO *next;
+
+    if (out == NULL)
+        return 0;
+    ctx = BIO_get_data(b);
+
+    next = BIO_next(b);
+    if ((ctx == NULL) || (next == NULL))
+        return 0;
+
+    /* First check if there are bytes decoded/encoded */
+    if (ctx->buf_len > 0) {
+        i = ctx->buf_len - ctx->buf_off;
+        if (i > outl)
+            i = outl;
+        memcpy(out, &(ctx->buf[ctx->buf_off]), i);
+        ret = i;
+        out += i;
+        outl -= i;
+        ctx->buf_off += i;
+        if (ctx->buf_len == ctx->buf_off) {
+            ctx->buf_len = 0;
+            ctx->buf_off = 0;
+        }
+    }
+
+    blocksize = EVP_CIPHER_CTX_get_block_size(ctx->cipher);
+
+    if (blocksize == 0)
+        return 0;
+
+    if (blocksize == 1)
+        blocksize = 0;
+
+    /*
+     * At this point, we have room of outl bytes and an empty buffer, so we
+     * should read in some more.
+     */
+
+    while (outl > 0) {
+        if (ctx->cont <= 0)
+            break;
+
+        if (ctx->read_start == ctx->read_end) { /* time to read more data */
+            ctx->read_end = ctx->read_start = &(ctx->buf[BUF_OFFSET]);
+            i = BIO_read(next, ctx->read_start, ENC_BLOCK_SIZE);
+            if (i > 0)
+                ctx->read_end += i;
+        } else {
+            i = ctx->read_end - ctx->read_start;
+        }
+
+        if (i <= 0) {
+            /* Should be continue next time we are called? */
+            if (!BIO_should_retry(next)) {
+                ctx->cont = i;
+                ctx->finished = 1;
+                i = EVP_CipherFinal_ex(ctx->cipher,
+                    ctx->buf, &(ctx->buf_len));
+                ctx->ok = i;
+                ctx->buf_off = 0;
+            } else {
+                ret = (ret == 0) ? i : ret;
+                break;
+            }
+        } else {
+            if (outl > ENC_MIN_CHUNK) {
+                /*
+                 * Depending on flags block cipher decrypt can write
+                 * one extra block and then back off, i.e. output buffer
+                 * has to accommodate extra block...
+                 */
+                int j = outl - blocksize, buf_len;
+
+                if (!EVP_CipherUpdate(ctx->cipher,
+                        (unsigned char *)out, &buf_len,
+                        ctx->read_start, i > j ? j : i)) {
+                    BIO_clear_retry_flags(b);
+                    return 0;
+                }
+                ret += buf_len;
+                out += buf_len;
+                outl -= buf_len;
+
+                if ((i -= j) <= 0) {
+                    ctx->read_start = ctx->read_end;
+                    continue;
+                }
+                ctx->read_start += j;
+            }
+            if (i > ENC_MIN_CHUNK)
+                i = ENC_MIN_CHUNK;
+            if (!EVP_CipherUpdate(ctx->cipher,
+                    ctx->buf, &ctx->buf_len,
+                    ctx->read_start, i)) {
+                BIO_clear_retry_flags(b);
+                ctx->ok = 0;
+                return 0;
+            }
+            ctx->read_start += i;
+            ctx->cont = 1;
+            /*
+             * Note: it is possible for EVP_CipherUpdate to decrypt zero
+             * bytes because this is or looks like the final block: if this
+             * happens we should retry and either read more data or decrypt
+             * the final block
+             */
+            if (ctx->buf_len == 0)
+                continue;
+        }
+
+        if (ctx->buf_len <= outl)
+            i = ctx->buf_len;
+        else
+            i = outl;
+        if (i <= 0)
+            break;
+        memcpy(out, ctx->buf, i);
+        ret += i;
+        ctx->buf_off = i;
+        outl -= i;
+        out += i;
+    }
+
+    BIO_clear_retry_flags(b);
+    BIO_copy_next_retry(b);
+    return ((ret == 0) ? ctx->cont : ret);
+}
+
+static int enc_write(BIO *b, const char *in, int inl)
+{
+    int ret = 0, n, i;
+    BIO_ENC_CTX *ctx;
+    BIO *next;
+
+    ctx = BIO_get_data(b);
+    next = BIO_next(b);
+    if ((ctx == NULL) || (next == NULL))
+        return 0;
+
+    ret = inl;
+
+    BIO_clear_retry_flags(b);
+    n = ctx->buf_len - ctx->buf_off;
+    while (n > 0) {
+        i = BIO_write(next, &(ctx->buf[ctx->buf_off]), n);
+        if (i <= 0) {
+            BIO_copy_next_retry(b);
+            return i;
+        }
+        ctx->buf_off += i;
+        n -= i;
+    }
+    /* at this point all pending data has been written */
+
+    if ((in == NULL) || (inl <= 0))
+        return 0;
+
+    ctx->buf_off = 0;
+    while (inl > 0) {
+        n = (inl > ENC_BLOCK_SIZE) ? ENC_BLOCK_SIZE : inl;
+        if (!EVP_CipherUpdate(ctx->cipher,
+                ctx->buf, &ctx->buf_len,
+                (const unsigned char *)in, n)) {
+            BIO_clear_retry_flags(b);
+            ctx->ok = 0;
+            return 0;
+        }
+        inl -= n;
+        in += n;
+
+        ctx->buf_off = 0;
+        n = ctx->buf_len;
+        while (n > 0) {
+            i = BIO_write(next, &(ctx->buf[ctx->buf_off]), n);
+            if (i <= 0) {
+                BIO_copy_next_retry(b);
+                return (ret == inl) ? i : ret - inl;
+            }
+            n -= i;
+            ctx->buf_off += i;
+        }
+        ctx->buf_len = 0;
+        ctx->buf_off = 0;
+    }
+    BIO_copy_next_retry(b);
+    return ret;
+}
+
+static long enc_ctrl(BIO *b, int cmd, long num, void *ptr)
+{
+    BIO *dbio;
+    BIO_ENC_CTX *ctx, *dctx;
+    long ret = 1;
+    int i;
+    EVP_CIPHER_CTX **c_ctx;
+    BIO *next;
+    int pend;
+
+    ctx = BIO_get_data(b);
+    next = BIO_next(b);
+    if (ctx == NULL)
+        return 0;
+
+    switch (cmd) {
+    case BIO_CTRL_RESET:
+        ctx->ok = 1;
+        ctx->finished = 0;
+        if (!EVP_CipherInit_ex(ctx->cipher, NULL, NULL, NULL, NULL,
+                EVP_CIPHER_CTX_is_encrypting(ctx->cipher)))
+            return 0;
+        ret = BIO_ctrl(next, cmd, num, ptr);
+        break;
+    case BIO_CTRL_EOF: /* More to read */
+        if (ctx->cont <= 0)
+            ret = 1;
+        else
+            ret = BIO_ctrl(next, cmd, num, ptr);
+        break;
+    case BIO_CTRL_WPENDING:
+        ret = ctx->buf_len - ctx->buf_off;
+        if (ret <= 0)
+            ret = BIO_ctrl(next, cmd, num, ptr);
+        break;
+    case BIO_CTRL_PENDING: /* More to read in buffer */
+        ret = ctx->buf_len - ctx->buf_off;
+        if (ret <= 0)
+            ret = BIO_ctrl(next, cmd, num, ptr);
+        break;
+    case BIO_CTRL_FLUSH:
+        /* do a final write */
+    again:
+        while (ctx->buf_len != ctx->buf_off) {
+            pend = ctx->buf_len - ctx->buf_off;
+            i = enc_write(b, NULL, 0);
+            /*
+             * i should never be > 0 here because we didn't ask to write any
+             * new data. We stop if we get an error or we failed to make any
+             * progress writing pending data.
+             */
+            if (i < 0 || (ctx->buf_len - ctx->buf_off) == pend)
+                return i;
+        }
+
+        if (!ctx->finished) {
+            ctx->finished = 1;
+            ctx->buf_off = 0;
+            ret = EVP_CipherFinal_ex(ctx->cipher,
+                (unsigned char *)ctx->buf,
+                &(ctx->buf_len));
+            ctx->ok = (int)ret;
+            if (ret <= 0)
+                break;
+
+            /* push out the bytes */
+            goto again;
+        }
+
+        /* Finally flush the underlying BIO */
+        ret = BIO_ctrl(next, cmd, num, ptr);
+        BIO_copy_next_retry(b);
+        break;
+    case BIO_C_GET_CIPHER_STATUS:
+        ret = (long)ctx->ok;
+        break;
+    case BIO_C_DO_STATE_MACHINE:
+        BIO_clear_retry_flags(b);
+        ret = BIO_ctrl(next, cmd, num, ptr);
+        BIO_copy_next_retry(b);
+        break;
+    case BIO_C_GET_CIPHER_CTX:
+        c_ctx = (EVP_CIPHER_CTX **)ptr;
+        *c_ctx = ctx->cipher;
+        BIO_set_init(b, 1);
+        break;
+    case BIO_CTRL_DUP:
+        dbio = (BIO *)ptr;
+        dctx = BIO_get_data(dbio);
+        dctx->cipher = EVP_CIPHER_CTX_new();
+        if (dctx->cipher == NULL)
+            return 0;
+        ret = EVP_CIPHER_CTX_copy(dctx->cipher, ctx->cipher);
+        if (ret)
+            BIO_set_init(dbio, 1);
+        break;
+    default:
+        ret = BIO_ctrl(next, cmd, num, ptr);
+        break;
+    }
+    return ret;
+}
+
+static long enc_callback_ctrl(BIO *b, int cmd, BIO_info_cb *fp)
+{
+    BIO *next = BIO_next(b);
+
+    if (next == NULL)
+        return 0;
+
+    return BIO_callback_ctrl(next, cmd, fp);
+}
+
+int BIO_set_cipher(BIO *b, const EVP_CIPHER *c, const unsigned char *k,
+    const unsigned char *i, int e)
+{
+    BIO_ENC_CTX *ctx;
+    BIO_callback_fn_ex callback_ex;
+#ifndef OPENSSL_NO_DEPRECATED_3_0
+    long (*callback)(struct bio_st *, int, const char *, int, long, long) = NULL;
+#endif
+
+    ctx = BIO_get_data(b);
+    if (ctx == NULL)
+        return 0;
+
+    if ((callback_ex = BIO_get_callback_ex(b)) != NULL) {
+        if (callback_ex(b, BIO_CB_CTRL, (const char *)c, 0, BIO_CTRL_SET,
+                e, 1, NULL)
+            <= 0)
+            return 0;
+    }
+#ifndef OPENSSL_NO_DEPRECATED_3_0
+    else {
+        callback = BIO_get_callback(b);
+
+        if ((callback != NULL) && (callback(b, BIO_CB_CTRL, (const char *)c, BIO_CTRL_SET, e, 0L) <= 0))
+            return 0;
+    }
+#endif
+
+    BIO_set_init(b, 1);
+
+    if (!EVP_CipherInit_ex(ctx->cipher, c, NULL, k, i, e))
+        return 0;
+
+    if (callback_ex != NULL)
+        return callback_ex(b, BIO_CB_CTRL | BIO_CB_RETURN, (const char *)c, 0,
+            BIO_CTRL_SET, e, 1, NULL);
+#ifndef OPENSSL_NO_DEPRECATED_3_0
+    else if (callback != NULL)
+        return callback(b, BIO_CB_CTRL, (const char *)c, BIO_CTRL_SET, e, 1L);
+#endif
+    return 1;
+}
+
+=== REFERENCE_TESTS (pattern hints — first 50 lines each — not SOURCE_UNDER_TEST) ===
+
+// --- begin excerpt test/bio_callback_test.c ---
+/*
+ * Copyright 2018-2021 The OpenSSL Project Authors. All Rights Reserved.
+ *
+ * Licensed under the Apache License 2.0 (the "License").  You may not use
+ * this file except in compliance with the License.  You can obtain a copy
+ * in the file LICENSE in the source distribution or at
+ * https://www.openssl.org/source/license.html
+ */
+#define OPENSSL_SUPPRESS_DEPRECATED
+#include <stdio.h>
+#include <string.h>
+#include <openssl/bio.h>
+
+#include "testutil.h"
+
+#define MAXCOUNT 5
+static int my_param_count;
+static BIO *my_param_b[MAXCOUNT];
+static int my_param_oper[MAXCOUNT];
+static const char *my_param_argp[MAXCOUNT];
+static int my_param_argi[MAXCOUNT];
+static long my_param_argl[MAXCOUNT];
+static long my_param_ret[MAXCOUNT];
+static size_t my_param_len[MAXCOUNT];
+static size_t my_param_processed[MAXCOUNT];
+
+static long my_bio_cb_ex(BIO *b, int oper, const char *argp, size_t len,
+    int argi, long argl, int ret, size_t *processed)
+{
+    if (my_param_count >= MAXCOUNT)
+        return -1;
+    my_param_b[my_param_count] = b;
+    my_param_oper[my_param_count] = oper;
+    my_param_argp[my_param_count] = argp;
+    my_param_argi[my_param_count] = argi;
+    my_param_argl[my_param_count] = argl;
+    my_param_ret[my_param_count] = ret;
+    my_param_len[my_param_count] = len;
+    my_param_processed[my_param_count] = processed != NULL ? *processed : 0;
+
+    my_param_count++;
+    return ret;
+}
+
+static int test_bio_callback_ex(void)
+{
+    int ok = 0;
+    BIO *bio;
+    int i;
+    char test1[] = "test";
+// --- end excerpt test/bio_callback_test.c ---
+
+// --- begin excerpt test/asynciotest.c ---
+/*
+ * Copyright 2016-2020 The OpenSSL Project Authors. All Rights Reserved.
+ *
+ * Licensed under the Apache License 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ * https://www.openssl.org/source/license.html
+ * or in the file LICENSE in the source distribution.
+ */
+
+#include <string.h>
+#include <openssl/ssl.h>
+#include <openssl/bio.h>
+#include <openssl/err.h>
+
+#include "internal/packet.h"
+
+#include "helpers/ssltestlib.h"
+#include "testutil.h"
+
+/* Should we fragment records or not? 0 = no, !0 = yes*/
+static int fragment = 0;
+
+static char *cert = NULL;
+static char *privkey = NULL;
+
+static int async_new(BIO *bi);
+static int async_free(BIO *a);
+static int async_read(BIO *b, char *out, int outl);
+static int async_write(BIO *b, const char *in, int inl);
+static long async_ctrl(BIO *b, int cmd, long num, void *ptr);
+static int async_gets(BIO *bp, char *buf, int size);
+static int async_puts(BIO *bp, const char *str);
+
+/* Choose a sufficiently large type likely to be unused for this custom BIO */
+#define BIO_TYPE_ASYNC_FILTER (0x80 | BIO_TYPE_FILTER)
+
+static BIO_METHOD *methods_async = NULL;
+
+struct async_ctrs {
+    unsigned int rctr;
+    unsigned int wctr;
+};
+
+static const BIO_METHOD *bio_f_async_filter(void)
+{
+    if (methods_async == NULL) {
+        methods_async = BIO_meth_new(BIO_TYPE_ASYNC_FILTER, "Async filter");
+        if (methods_async == NULL
+            || !BIO_meth_set_write(methods_async, async_write)
+// --- end excerpt test/asynciotest.c ---
+
+// --- begin excerpt test/tls13ccstest.c ---
+/*
+ * Copyright 2017-2024 The OpenSSL Project Authors. All Rights Reserved.
+ *
+ * Licensed under the Apache License 2.0 (the "License").  You may not use
+ * this file except in compliance with the License.  You can obtain a copy
+ * in the file LICENSE in the source distribution or at
+ * https://www.openssl.org/source/license.html
+ */
+
+#include <openssl/ssl.h>
+#include <string.h>
+#include "helpers/ssltestlib.h"
+#include "testutil.h"
+#include "internal/packet.h"
+
+static char *cert = NULL;
+static char *privkey = NULL;
+
+static BIO *s_to_c_fbio = NULL, *c_to_s_fbio = NULL;
+static int chseen = 0, shseen = 0, sccsseen = 0, ccsaftersh = 0;
+static int ccsbeforesh = 0, sappdataseen = 0, cappdataseen = 0, badccs = 0;
+static int badvers = 0, badsessid = 0;
+
+static unsigned char chsessid[SSL_MAX_SSL_SESSION_ID_LENGTH];
+static size_t chsessidlen = 0;
+
+static int watchccs_new(BIO *bi);
+static int watchccs_free(BIO *a);
+static int watchccs_read(BIO *b, char *out, int outl);
+static int watchccs_write(BIO *b, const char *in, int inl);
+static long watchccs_ctrl(BIO *b, int cmd, long num, void *ptr);
+static int watchccs_gets(BIO *bp, char *buf, int size);
+static int watchccs_puts(BIO *bp, const char *str);
+
+/* Choose a sufficiently large type likely to be unused for this custom BIO */
+#define BIO_TYPE_WATCHCCS_FILTER (0x80 | BIO_TYPE_FILTER)
+
+static BIO_METHOD *method_watchccs = NULL;
+
+static const BIO_METHOD *bio_f_watchccs_filter(void)
+{
+    if (method_watchccs == NULL) {
+        method_watchccs = BIO_meth_new(BIO_TYPE_WATCHCCS_FILTER,
+            "Watch CCS filter");
+        if (method_watchccs == NULL
+            || !BIO_meth_set_write(method_watchccs, watchccs_write)
+            || !BIO_meth_set_read(method_watchccs, watchccs_read)
+            || !BIO_meth_set_puts(method_watchccs, watchccs_puts)
+            || !BIO_meth_set_gets(method_watchccs, watchccs_gets)
+            || !BIO_meth_set_ctrl(method_watchccs, watchccs_ctrl)
+// --- end excerpt test/tls13ccstest.c ---
+
+// --- begin excerpt test/bio_comp_test.c ---
+/*
+ * Copyright 2022-2025 The OpenSSL Project Authors. All Rights Reserved.
+ *
+ * Licensed under the Apache License 2.0 (the "License").  You may not use
+ * this file except in compliance with the License.  You can obtain a copy
+ * in the file LICENSE in the source distribution or at
+ * https://www.openssl.org/source/license.html
+ */
+#include <stdio.h>
+#include <string.h>
+#include <openssl/evp.h>
+#include <openssl/bio.h>
+#include <openssl/rand.h>
+#include <openssl/comp.h>
+
+#include "testutil.h"
+#include "testutil/output.h"
+#include "testutil/tu_local.h"
+
+#define COMPRESS 1
+#define EXPAND 0
+
+#define BUFFER_SIZE 32 * 1024
+#define NUM_SIZES 4
+static int sizes[NUM_SIZES] = { 64, 512, 2048, 16 * 1024 };
+
+/* using global buffers */
+static unsigned char *original = NULL;
+static unsigned char *result = NULL;
+
+/*
+ * For compression:
+ *   the write operation compresses
+ *   the read operation decompresses
+ */
+
+static int do_bio_comp_test(const BIO_METHOD *meth, size_t size)
+{
+    BIO *bcomp = NULL;
+    BIO *bmem = NULL;
+    BIO *bexp = NULL;
+    int osize;
+    int rsize;
+    int ret = 0;
+
+    /* Compress */
+    if (!TEST_ptr(meth))
+        goto err;
+    if (!TEST_ptr(bcomp = BIO_new(meth)))
+        goto err;
+// --- end excerpt test/bio_comp_test.c ---
+
+
+=== STUB (test/gen_gpt_oss_120b_t1_tp0p95_fp0_s1_260827_002816.c) — the file being compiled; you fill the marked block ===
+
+/*
+ * Copyright 2026 The OpenSSL Project Authors. All Rights Reserved.
+ *
+ * Licensed under the Apache License 2.0 (the "License").  You may not use
+ * this file except in compliance with the License.  You can obtain a copy
+ * in the file LICENSE in the source distribution or at
+ * https://www.openssl.org/source/license.html
+ *
+ * Skeleton for: gen_gpt_oss_120b_t1_tp0p95_fp0_s1_260827_002816.c — fill ONLY BEGIN_LLM_REPLACE .. END_LLM_REPLACE (past LLM).
+ */
+
+#include <string.h>
+
+#include <openssl/bio.h>
+#include <openssl/evp.h>
+#include <openssl/crypto.h>
+
+#include "testutil.h"
+
+static int test_bio_enc_generated(void)
+{
+    /* BEGIN_LLM_REPLACE */
+    return TEST_true(1);
+    /* END_LLM_REPLACE */
+}
+
+int setup_tests(void)
+{
+    ADD_TEST(test_bio_enc_generated);
+    return 1;
+}
+
+// Only the headers #included above are available. If you need another one, say so in a comment rather than adding it.
+
+=== RULES (/Users/ammarlakho/Documents/Thesis/openssl/thesis-work/docs/llm-openssl-test-snippet.md) ===
+
+# Snippet-mode rules (stub already exists)
+
+Operators generate **`setup_tests`, `ADD_TEST`, `#include`** with **`scripts/llm_test.py stub`** (or by hand).
+
+The LLM fills **only the body** inside **`BEGIN_LLM_REPLACE` … `END_LLM_REPLACE`** in that stub.
+
+## Forbidden
+
+- **No further `#include`**, **`setup_tests`**, **`main`**, or **`ADD_TEST`** unless the stub is wrong.
+- **No** `#include "crypto/...` or headers mirroring **`crypto/foo/bar.c` → `crypto/foo/bar.h`** (almost always hallucinated).
+- Use **only `<openssl/*.h>`** names that already appear in **`include/openssl/`**, plus **`testutil.h`** semantics from references.
+
+## Required
+
+- Use **`TEST_*` macros only** (`TEST_true`, `TEST_ptr`, **`TEST_mem_eq(a, na, b, nb)`**, …). No `TEST_assert`.
+- Replace **everything between** literal comments **`/* BEGIN_LLM_REPLACE */`** and **`/* END_LLM_REPLACE */`**, **including** the placeholder **`return TEST_true(1);`**.
+- **`return 1`** on overall success and **`return 0`** when any **`TEST_*` check fails (same conventions as **`test/*.c`**).
+- **Opaque types:** no `bio->internal`; use **`BIO_get_cipher_ctx`**, **`BIO_read`/`BIO_write`/`BIO_push`**, etc.
+
+## Output shape
+
+Plain C replacing the **`BEGIN_LLM_REPLACE`** … **`END_LLM_REPLACE`** block (markers stay in place or are removed manually after merge—as long as semantics match). Include all **`return`** paths the function needs—no stray markdown or prose.
+
+=== WHAT_TO_EMIT ===
+
+- Replace ONLY the code between BEGIN_LLM_REPLACE / END_LLM_REPLACE in the STUB above.
+- One cohesive test function body; TEST_* asserts; returns 1 on success, 0 on failure.
+- No markdown, no narration, no #include/crypto/* fake headers.

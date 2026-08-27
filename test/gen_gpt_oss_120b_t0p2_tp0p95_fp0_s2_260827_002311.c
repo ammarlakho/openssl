@@ -1,0 +1,104 @@
+/*
+ * Copyright 2026 The OpenSSL Project Authors. All Rights Reserved.
+ *
+ * Licensed under the Apache License 2.0 (the "License").  You may not use
+ * this file except in compliance with the License.  You can obtain a copy
+ * in the file LICENSE in the source distribution or at
+ * https://www.openssl.org/source/license.html
+ *
+ * Skeleton for: gen_gpt_oss_120b_t0p2_tp0p95_fp0_s2_260827_002311.c — fill ONLY BEGIN_LLM_REPLACE .. END_LLM_REPLACE (past LLM).
+ */
+
+#include <string.h>
+
+#include <openssl/bio.h>
+#include <openssl/evp.h>
+#include <openssl/crypto.h>
+
+#include "testutil.h"
+
+static int test_bio_enc_generated(void)
+{
+    /* BEGIN_LLM_REPLACE */
+        /* Fixed test vector (key, iv, plaintext).  The actual ciphertext is
+         * not needed – we only verify that encrypt‑then‑decrypt yields the
+         * original plaintext. */
+        static const unsigned char key[32] = {
+            0x60,0x3d,0xeb,0x10,0x15,0xca,0x71,0xbe,
+            0x2b,0x73,0xae,0xf0,0x85,0x7d,0x77,0x81,
+            0x1f,0x35,0x2c,0x07,0x3b,0x61,0x08,0xd7,
+            0x2d,0x98,0x10,0xa3,0x09,0x14,0xdf,0xf4
+        };
+        static const unsigned char iv[16] = {
+            0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,
+            0x08,0x09,0x0a,0x0b,0x0c,0x0d,0x0e,0x0f
+        };
+        const char plaintext[] = "OpenSSL BIO cipher round‑trip test data";
+        const size_t pt_len = sizeof(plaintext) - 1; /* exclude NUL */
+
+        BIO *bmem = NULL, *bcipher = NULL;
+        BIO *bmem_in = NULL, *bdec = NULL;
+        char *cdata = NULL;
+        long c_len = 0;
+        unsigned char outbuf[256];
+        int outlen = 0, ret = 0;
+
+        /* ---------- Encryption side ---------- */
+        if (!TEST_ptr(bmem = BIO_new(BIO_s_mem())))
+            goto err;
+        if (!TEST_ptr(bcipher = BIO_new(BIO_f_cipher())))
+            goto err;
+        /* bcipher sits on top of bmem */
+        BIO_push(bcipher, bmem);
+
+        if (!TEST_true(BIO_set_cipher(bcipher, EVP_aes_256_cbc(),
+                                      key, iv, 1)))   /* encrypt */
+            goto err;
+
+        if (!TEST_int_eq(BIO_write(bcipher, plaintext, (int)pt_len), (int)pt_len))
+            goto err;
+        if (!TEST_true(BIO_flush(bcipher)))
+            goto err;
+
+        /* Retrieve ciphertext from the memory BIO */
+        c_len = BIO_get_mem_data(bmem, &cdata);
+        if (!TEST_int_gt(c_len, 0))
+            goto err;
+
+        /* ---------- Decryption side ---------- */
+        if (!TEST_ptr(bmem_in = BIO_new_mem_buf(cdata, (int)c_len)))
+            goto err;
+        if (!TEST_ptr(bdec = BIO_new(BIO_f_cipher())))
+            goto err;
+        BIO_push(bdec, bmem_in);
+
+        if (!TEST_true(BIO_set_cipher(bdec, EVP_aes_256_cbc(),
+                                      key, iv, 0)))   /* decrypt */
+            goto err;
+
+        outlen = BIO_read(bdec, outbuf, sizeof(outbuf));
+        if (!TEST_int_gt(outlen, 0))
+            goto err;
+        if (!TEST_int_eq(outlen, (int)pt_len))
+            goto err;
+        if (!TEST_mem_eq(outbuf, outlen, plaintext, pt_len))
+            goto err;
+
+        /* Verify that the cipher reported success */
+        if (!TEST_int_eq(BIO_ctrl(bdec, BIO_C_GET_CIPHER_STATUS, 0, NULL), 1))
+            goto err;
+
+        ret = 1;   /* success */
+
+    err:
+        BIO_free_all(bcipher);   /* frees bmem as well */
+        BIO_free_all(bdec);      /* frees bmem_in as well */
+        return ret;
+    /* END_LLM_REPLACE */
+}
+
+int setup_tests(void)
+{
+    ADD_TEST(test_bio_enc_generated);
+    return 1;
+}

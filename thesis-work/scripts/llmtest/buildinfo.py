@@ -11,7 +11,7 @@ Registering a test adds the two things a new test binary needs:
   2. A SOURCE[name]=/INCLUDE[name]=/DEPEND[name]= block (modeled on the
      generated_test block).
 
-`SOURCE[...]` is relative to test/, so a sweep-generated test living in
+`SOURCE[...]` is relative to test/, so an experiment-generated test living in
 test/generated/<name>/<name>.c registers as `generated/<name>/<name>.c`.
 INCLUDE/DEPEND are relative to test/ too, so they do not change with the
 source's subdirectory.
@@ -70,6 +70,44 @@ def add_build_block(text: str, name: str, source: str) -> tuple:
     )
     insert_at = anchor_block.end()
     return text[:insert_at] + new_block + text[insert_at:], True
+
+
+def source_of(name: str, text: str = None) -> str:
+    """The registered SOURCE[...] path for `name`, or None if not registered."""
+    text = text if text is not None else BUILD_INFO.read_text()
+    match = re.search(r"  SOURCE\[{}\]=(.*)".format(re.escape(name)), text)
+    return match.group(1).strip() if match else None
+
+
+def remove_from_program_list(text: str, name: str) -> tuple:
+    pattern = re.compile(r"[ \t]+" + re.escape(name) + r"(?![\w])")
+    new_text, count = pattern.subn("", text)
+    return new_text, bool(count)
+
+
+def remove_build_block(text: str, name: str) -> tuple:
+    pattern = re.compile(
+        r"\n?  SOURCE\[{0}\]=.*\n  INCLUDE\[{0}\]=.*\n  DEPEND\[{0}\]=.*\n".format(
+            re.escape(name)))
+    new_text, count = pattern.subn("", text)
+    return new_text, bool(count)
+
+
+def unregister(name: str) -> tuple:
+    """Remove `name` from test/build.info. Returns (list_removed, block_removed).
+
+    The inverse of register(); like it, a no-op if nothing is there.
+    """
+    if not BUILD_INFO.exists():
+        raise BuildInfoError("{} not found".format(BUILD_INFO))
+
+    text = BUILD_INFO.read_text()
+    text, list_removed = remove_from_program_list(text, name)
+    text, block_removed = remove_build_block(text, name)
+
+    if list_removed or block_removed:
+        BUILD_INFO.write_text(text)
+    return list_removed, block_removed
 
 
 def register(name: str, source: str = None) -> tuple:

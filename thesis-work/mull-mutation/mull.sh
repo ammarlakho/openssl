@@ -44,27 +44,59 @@ compile() {
     log_timing "$start" "compile"
 }
 
-# Compile for running mutation tests (with coverage)
-compile-cov() {
+# Reconfigure the tree for coverage-guided mutation. Independent of any one
+# test, so a batch of tests only needs this once.
+configure-cov() {
     local start=$(date +%s%N)
     make_clean
-    local test="${1:-./test/bio_enc_test}"
     docker_run ./config no-shared -O0 \
         -fpass-plugin=/usr/lib/mull-ir-frontend-18 \
         -g -grecord-command-line \
         -fprofile-instr-generate -fcoverage-mapping # only mutate code that is executed by the run of the test/s
     docker_run bash -c 'make -s build_generated -j"$(nproc)"'
+    log_timing "$start" "configure-cov"
+}
+
+# Build one test binary in an already-configured tree.
+build-test() {
+    local start=$(date +%s%N)
+    local test="${1:-./test/bio_enc_test}"
     echo "Building test binary: $test"
     docker_run bash -c "make -s $test -j\"\$(nproc)\""
+    log_timing "$start" "build-test"
+}
+
+# Compile for running mutation tests (with coverage)
+compile-cov() {
+    local start=$(date +%s%N)
+    configure-cov
+    build-test "${1:-./test/bio_enc_test}"
     log_timing "$start" "compile-cov"
 }
 
+# Run mull and write a machine-readable report next to a human-readable one.
+#
+#   thesis-work/experiments/results/<name>/<name>.json   Mutation Testing Elements schema
+#   thesis-work/experiments/results/<name>/<name>.txt    the usual file:line:col warnings
+#
+# Override the destination with MULL_REPORT_DIR / MULL_REPORT_NAME.
+# Surviving mutants are data here, not a failure, so the exit code is left to
+# mean "mull itself could not run".
 mutate() {
     local start=$(date +%s%N)
     local test="${1:-./test/bio_enc_test}"
+    local name="${MULL_REPORT_NAME:-$(basename "$test")}"
+    local report_dir="${MULL_REPORT_DIR:-thesis-work/experiments/results/$name}"
+    mkdir -p "$REPO_ROOT/$report_dir"
     echo "Running mutation testing against: $test"
-    docker_run mull-runner-18 "$test"
+    docker_run mull-runner-18 \
+        --reporters IDE --reporters Elements \
+        --report-dir "/openssl/$report_dir" --report-name "$name" \
+        --allow-surviving --mutation-score-threshold 0 \
+        "$test"
+    local status=$?
     log_timing "$start" "mutate"
+    return $status
 }
 
 # Compile for running tests
@@ -103,6 +135,8 @@ case "$1" in
     make_clean)  make_clean ;;
     compile)     compile ;;
     compile-cov) compile-cov "$2" ;;
+    configure-cov) configure-cov ;;
+    build-test)  build-test "$2" ;;
     mutate)      mutate "$2" ;;
     shell)       shell ;;
     run)         compile && mutate "$2" ;;
@@ -119,6 +153,8 @@ case "$1" in
         echo "  make_clean   Run make clean inside the container"
         echo "  compile      Configure + build bio_enc_test — no coverage (~1600 mutants)"
         echo "  compile-cov  Reconfigure + rebuild with coverage + no-shared (default: ./test/bio_enc_test)"
+        echo "  configure-cov  Just the coverage reconfigure; share it across many tests"
+        echo "  build-test   Build one test binary in an already-configured tree"
         echo "  compile-normal Configure + build without coverage (~1600 mutants)"
         echo "  mutate       Run mutation testing (default: ./test/bio_enc_test)"
         echo "               e.g.: ./mull.sh mutate ./test/generated_test"

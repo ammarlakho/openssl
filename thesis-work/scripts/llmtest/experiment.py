@@ -1,27 +1,25 @@
 """Run a grid of generation parameters and save each result as its own test.
 
-One sweep run = one (temperature, top_p, seed, penalty, ...) combination =
-one self-contained directory under test/generated/:
+One run = one (temperature, top_p, seed, penalty, ...) combination:
 
-    test/generated/<name>/
-        <name>.c        the filled stub -- this is what the build compiles
-        meta.json       model, endpoint, every sampling knob, timing, outcome
-        prompt.txt      the exact prompt that was sent
-        response.txt    the raw model reply, before splicing/sanitising
+    test/<name>.c               the filled stub, flat with every other test
+    test/generated/<name>/      meta.json, prompt.txt, response.txt
+    test/generated/runs.jsonl   one line per run
 
-<name> encodes the model and the knobs that produced it, plus a timestamp, so
-two runs never collide and a directory listing is already a readable result
-table. Every successful run is registered in test/build.info (so `make
-test/<name>` works) and appended to test/generated/runs.jsonl.
+The .c stays in test/ because a test's `#include "testutil.h"` resolves
+relative to its own directory, which build.info's INCLUDE cannot override.
 
-The grid comes from a JSON config so re-running with different parameters is a
-config edit, not a code edit; --grid overrides individual axes from the command
-line.
+<name> encodes the model, the knobs and a timestamp. Successful runs are
+registered in test/build.info, giving a binary at test/<name>.
+
+The grid comes from a JSON config, so re-running with different parameters is a
+config edit; --grid overrides individual axes from the command line.
 """
 
 import hashlib
 import itertools
 import json
+import shutil
 import time
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -30,9 +28,9 @@ from typing import Any, Dict, List, Optional
 
 from . import backends, buildinfo, paths, stub
 from .backends import BackendError, GenParams
-from .context import ContextOptions, build_prompt
+from .context import GENERATED_MARKER, ContextOptions, build_prompt
 
-# Everything a sweep produces lives here, one directory per run.
+# Everything an experiment produces lives here, one directory per run.
 OUT_DIR = paths.TEST_DIR / "generated"
 INDEX = OUT_DIR / "runs.jsonl"
 
@@ -77,8 +75,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
 }
 
 
-class SweepError(Exception):
-    """A sweep could not be planned or run."""
+class ExperimentError(Exception):
+    """An experiment could not be planned or run."""
 
 
 # --------------------------------------------------------------------------
@@ -131,14 +129,14 @@ def load_config(path: Optional[str]) -> Dict[str, Any]:
         if not cfg_path.is_file():
             cfg_path = paths.resolve_under_repo(path)
         if not cfg_path.is_file():
-            raise SweepError("config not found: {}".format(path))
+            raise ExperimentError("config not found: {}".format(path))
         try:
             loaded = json.loads(cfg_path.read_text())
         except json.JSONDecodeError as exc:
-            raise SweepError("{}: {}".format(cfg_path, exc))
+            raise ExperimentError("{}: {}".format(cfg_path, exc))
         unknown = set(loaded) - set(DEFAULT_CONFIG)
         if unknown:
-            raise SweepError("unknown config keys: {}".format(", ".join(sorted(unknown))))
+            raise ExperimentError("unknown config keys: {}".format(", ".join(sorted(unknown))))
         config.update(loaded)
     return config
 
@@ -150,7 +148,7 @@ def parse_grid_override(entries: List[str]) -> Dict[str, List[Any]]:
         axis, _, values = entry.partition("=")
         axis = axis.strip()
         if not values.strip():
-            raise SweepError("--grid needs axis=v1,v2 (got {!r})".format(entry))
+            raise ExperimentError("--grid needs axis=v1,v2 (got {!r})".format(entry))
         grid[axis] = [v.strip() for v in values.split(",") if v.strip()]
     return grid
 
@@ -159,7 +157,7 @@ def normalise_grid(grid: Dict[str, Any]) -> Dict[str, List[Any]]:
     clean: Dict[str, List[Any]] = {}
     for axis, values in grid.items():
         if axis not in AXES:
-            raise SweepError(
+            raise ExperimentError(
                 "unknown grid axis {!r}; known axes: {}".format(
                     axis, ", ".join(sorted(AXES))))
         if not isinstance(values, (list, tuple)):
@@ -168,9 +166,9 @@ def normalise_grid(grid: Dict[str, Any]) -> Dict[str, List[Any]]:
         try:
             clean[axis] = [None if v is None else cast(v) for v in values]
         except (TypeError, ValueError) as exc:
-            raise SweepError("bad value on axis {}: {}".format(axis, exc))
+            raise ExperimentError("bad value on axis {}: {}".format(axis, exc))
         if not clean[axis]:
-            raise SweepError("axis {} has no values".format(axis))
+            raise ExperimentError("axis {} has no values".format(axis))
     return clean
 
 
@@ -194,7 +192,7 @@ def _context_options(config: Dict[str, Any], stub_path: Path) -> ContextOptions:
     ctx = dict(config.get("context") or {})
     unknown = set(ctx) - {"notes", "keywords", "impl_lines", "refs", "lines"}
     if unknown:
-        raise SweepError("unknown context keys: {}".format(", ".join(sorted(unknown))))
+        raise ExperimentError("unknown context keys: {}".format(", ".join(sorted(unknown))))
     return ContextOptions(
         snippet=bool(config["snippet"]),
         notes=bool(ctx.get("notes", False)),
@@ -207,25 +205,29 @@ def _context_options(config: Dict[str, Any], stub_path: Path) -> ContextOptions:
     )
 
 
+def _taken(out_root: Path, name: str) -> bool:
+    return (out_root / name).exists() or (paths.TEST_DIR / "{}.c".format(name)).exists()
+
+
 def _unique_dir(base: Path) -> Path:
-    """Names carry a seconds-resolution stamp; make collisions impossible anyway."""
-    if not base.exists():
+    out_root, name = base.parent, base.name
+    if not _taken(out_root, name):
         return base
     for n in itertools.count(2):
-        candidate = base.with_name("{}_{}".format(base.name, n))
-        if not candidate.exists():
-            return candidate
+        candidate = "{}_{}".format(name, n)
+        if not _taken(out_root, candidate):
+            return out_root / candidate
 
 
 def plan(config: Dict[str, Any], grid_override: Dict[str, List[Any]]) -> List[Dict[str, Any]]:
-    """Every run this sweep will perform, before any of them happen."""
+    """Every run this experiment will perform, before any of them happen."""
     grid = dict(config.get("grid") or {})
     grid.update(grid_override)
     points = expand_grid(normalise_grid(grid))
 
     repeats = int(config.get("repeats") or 1)
     if repeats < 1:
-        raise SweepError("repeats must be >= 1")
+        raise ExperimentError("repeats must be >= 1")
 
     runs = []
     for point in points:
@@ -234,7 +236,7 @@ def plan(config: Dict[str, Any], grid_override: Dict[str, List[Any]]) -> List[Di
     return runs
 
 
-def run_sweep(
+def run_experiment(
     config: Dict[str, Any],
     grid_override: Optional[Dict[str, List[Any]]] = None,
     dry_run: bool = False,
@@ -251,14 +253,12 @@ def run_sweep(
     test_fn = config.get("test_fn") or _default_test_fn(source)
     source_path = paths.resolve_under_repo(source)
     if not source_path.is_file():
-        raise SweepError("source under test not found: {}".format(source_path))
+        raise ExperimentError("source under test not found: {}".format(source_path))
 
-    # Resolved once: every run in a sweep hits the same endpoint, and the model
-    # name is part of every run's name.
     profile, api_url, model, _ = backends.resolve_profile(
         config.get("profile"), config.get("api_url"), config.get("model"))
 
-    backends.log(">> [Sweep] {} run(s) | profile={} model={} | out={}".format(
+    backends.log(">> [Experiment] {} run(s) | profile={} model={} | out={}".format(
         len(runs), profile, model, out_root))
 
     results = []
@@ -267,7 +267,7 @@ def run_sweep(
         stamp = datetime.now().strftime("%y%m%d_%H%M%S")
         name = run_name(config.get("prefix") or "gen", model, point, stamp, run["repeat"])
 
-        backends.log(">> [Sweep] ({}/{}) {} [{}]".format(
+        backends.log(">> [Experiment] ({}/{}) {} [{}]".format(
             i, len(runs), name,
             ", ".join("{}={}".format(k, v) for k, v in sorted(point.items())) or "server defaults"))
 
@@ -300,10 +300,11 @@ def run_sweep(
         record["name"] = name
         run_dir.mkdir(parents=True)
 
-        test_c = run_dir / "{}.c".format(name)
+        test_c = paths.TEST_DIR / "{}.c".format(name)
         test_c.write_text(stub.generate_stub(name, test_fn, source_path))
         record["dir"] = str(run_dir.relative_to(paths.REPO_ROOT))
         record["source_file"] = str(test_c.relative_to(paths.REPO_ROOT))
+        record["binary"] = "test/{}".format(name)
 
         started = time.monotonic()
         try:
@@ -316,16 +317,16 @@ def run_sweep(
             (run_dir / "response.txt").write_text(reply)
             stub.fill_stub(test_c, reply)
             record["ok"] = True
-        except Exception as exc:                       # noqa: BLE001 -- recorded, not swallowed
+        except Exception as exc:                       # noqa: BLE001
             record["error"] = "{}: {}".format(type(exc).__name__, exc)
-            backends.log(">> [Sweep] FAILED {}: {}".format(name, record["error"]))
+            backends.log(">> [Experiment] FAILED {}: {}".format(name, record["error"]))
         record["duration_s"] = round(time.monotonic() - started, 1)
 
         if record["ok"] and register:
             rel_source = str(test_c.relative_to(paths.TEST_DIR))
             buildinfo.register(name, rel_source)
             record["registered"] = True
-            backends.log(">> [Sweep] registered {} (SOURCE={})".format(name, rel_source))
+            backends.log(">> [Experiment] registered {} (SOURCE={})".format(name, rel_source))
 
         (run_dir / "meta.json").write_text(json.dumps(record, indent=2) + "\n")
         _append_index(out_root, record)
@@ -337,10 +338,12 @@ def run_sweep(
 
     ok = sum(1 for r in results if r.get("ok"))
     if not dry_run:
-        backends.log(">> [Sweep] done: {}/{} succeeded; index: {}".format(
+        backends.log(">> [Experiment] done: {}/{} succeeded; index: {}".format(
             ok, len(results), (out_root / INDEX.name)))
-        if ok:
-            backends.log(">> [Sweep] next: ./thesis-work/mull-mutation/mull.sh compile-cov ./test/<name>")
+        for record in results:
+            if record.get("ok"):
+                backends.log(">> [Experiment] ./thesis-work/mull-mutation/mull.sh run-cov ./{}".format(
+                    record["binary"]))
     return results
 
 
@@ -348,3 +351,118 @@ def _append_index(out_root: Path, record: Dict[str, Any]) -> None:
     out_root.mkdir(parents=True, exist_ok=True)
     with (out_root / INDEX.name).open("a") as handle:
         handle.write(json.dumps(record) + "\n")
+
+
+# --------------------------------------------------------------------------
+# Pruning
+# --------------------------------------------------------------------------
+
+def list_runs(out_root: Optional[Path] = None) -> List[Dict[str, Any]]:
+    """Every run present on disk, newest name last."""
+    out_root = Path(out_root) if out_root else OUT_DIR
+    if not out_root.is_dir():
+        return []
+
+    runs = []
+    for run_dir in sorted(p for p in out_root.iterdir() if p.is_dir()):
+        meta_file = run_dir / "meta.json"
+        try:
+            meta = json.loads(meta_file.read_text()) if meta_file.is_file() else {}
+        except json.JSONDecodeError:
+            meta = {}
+        meta.setdefault("name", run_dir.name)
+        # No meta.json: interrupted, or files removed by hand -- not the same
+        # as a run that failed.
+        meta["_incomplete"] = not meta_file.is_file()
+        meta["_dir"] = run_dir
+        runs.append(meta)
+    return runs
+
+
+def select_runs(names: List[str], all_runs: bool, failed_only: bool,
+                out_root: Optional[Path] = None) -> List[Dict[str, Any]]:
+    runs = list_runs(out_root)
+    if all_runs:
+        chosen = runs
+    elif failed_only:
+        chosen = [r for r in runs if not r.get("ok")]
+    else:
+        by_name = {r["name"]: r for r in runs}
+        chosen = []
+        for name in names:
+            if name not in by_name:
+                raise ExperimentError("no such run under {}: {}".format(
+                    out_root or OUT_DIR, name))
+            chosen.append(by_name[name])
+    return chosen
+
+
+def prune(names: List[str], all_runs: bool = False, failed_only: bool = False,
+          dry_run: bool = False, keep_index: bool = False,
+          out_root: Optional[Path] = None) -> List[str]:
+    """Delete runs: test/<name>.c, the run directory, the build.info entries.
+
+    Only runs recorded under the experiment output directory are touched, and only a
+    .c still carrying the stub's LLM_REPLACE markers is deleted, so a
+    hand-written test can never be removed by a name collision here.
+    """
+    out_root = Path(out_root) if out_root else OUT_DIR
+    chosen = select_runs(names, all_runs, failed_only, out_root)
+    if not chosen:
+        backends.log(">> [Prune] nothing to delete")
+        return []
+
+    removed = []
+    for run in chosen:
+        name = run["name"]
+        run_dir = run["_dir"]
+        test_c = paths.REPO_ROOT / run.get("source_file", "test/{}.c".format(name))
+        drop_c = test_c.is_file() and GENERATED_MARKER in test_c.read_text(errors="replace")
+        registered = buildinfo.source_of(name)
+
+        targets = [str(run_dir)]
+        if drop_c:
+            targets.append(str(test_c))
+        if registered:
+            targets.append("build.info entry")
+
+        if dry_run:
+            backends.log(">> [Prune] would delete {}".format(", ".join(targets)))
+            removed.append(name)
+            continue
+
+        if test_c.is_file() and not drop_c:
+            backends.log(">> [Prune] leaving {}: no LLM_REPLACE marker".format(test_c))
+        elif drop_c:
+            test_c.unlink()
+        if registered:
+            buildinfo.unregister(name)
+        shutil.rmtree(run_dir)
+
+        backends.log(">> [Prune] deleted {}".format(", ".join(targets)))
+        removed.append(name)
+
+    if removed and not dry_run and not keep_index:
+        _rewrite_index(out_root, removed)
+    return removed
+
+
+def _rewrite_index(out_root: Path, removed: List[str]) -> None:
+    """Drop the pruned runs from runs.jsonl."""
+    index = out_root / INDEX.name
+    if not index.is_file():
+        return
+
+    gone = set(removed)
+    kept = []
+    for line in index.read_text().splitlines():
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            kept.append(line)
+            continue
+        if record.get("name") not in gone:
+            kept.append(line)
+    index.write_text("".join(l + "\n" for l in kept))

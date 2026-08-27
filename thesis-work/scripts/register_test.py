@@ -6,7 +6,7 @@ why a build.info entry is required at all.
 
     ./register_test.py <test-name> [source.c]
 
-`source.c` is relative to test/ and defaults to <test-name>.c. Sweep-generated
+`source.c` is relative to test/ and defaults to <test-name>.c. Experiment-generated
 tests pass e.g. generated/<name>/<name>.c.
 """
 

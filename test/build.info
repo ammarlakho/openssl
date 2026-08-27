@@ -55,7 +55,7 @@ IF[{- !$disabled{tests} -}]
           ssl_test_ctx_test ssl_test x509aux cipherlist_test asynciotest \
           bio_callback_test bio_memleak_test bio_core_test bio_dgram_test param_build_test \
           bioprinttest sslapitest ssl_handshake_rtt_test dtlstest sslcorrupttest \
-          bio_base64_test bio_enc_test generated_test generated_test_3 generated_test_cursor pkey_meth_test pkey_meth_kdf_test evp_kdf_test uitest \
+          bio_base64_test bio_enc_test generated_test gen_gpt_oss_120b_t1_tp0p95_fp0p3_s3_260827_003042 gen_gpt_oss_120b_t1_tp0p95_fp0p3_s2_260827_003017 gen_gpt_oss_120b_t1_tp0p95_fp0p3_s1_260827_002953 gen_gpt_oss_120b_t1_tp0p95_fp0_s3_260827_002911 gen_gpt_oss_120b_t1_tp0p95_fp0_s2_260827_002846 gen_gpt_oss_120b_t1_tp0p95_fp0_s1_260827_002816 gen_gpt_oss_120b_t0p8_tp0p95_fp0p3_s3_260827_002739 gen_gpt_oss_120b_t0p8_tp0p95_fp0p3_s2_260827_002715 gen_gpt_oss_120b_t0p8_tp0p95_fp0p3_s1_260827_002651 gen_gpt_oss_120b_t0p8_tp0p95_fp0_s3_260827_002632 gen_gpt_oss_120b_t0p8_tp0p95_fp0_s2_260827_002553 gen_gpt_oss_120b_t0p8_tp0p95_fp0_s1_260827_002516 gen_gpt_oss_120b_t0p2_tp0p95_fp0p3_s3_260827_002454 gen_gpt_oss_120b_t0p2_tp0p95_fp0p3_s2_260827_002434 gen_gpt_oss_120b_t0p2_tp0p95_fp0p3_s1_260827_002402 gen_gpt_oss_120b_t0p2_tp0p95_fp0_s3_260827_002336 gen_gpt_oss_120b_t0p2_tp0p95_fp0_s2_260827_002311 gen_gpt_oss_120b_t0p2_tp0p95_fp0_s1_260827_002233 generated_test_3 generated_test_cursor pkey_meth_test pkey_meth_kdf_test evp_kdf_test uitest \
           cipherbytes_test threadstest_fips threadpool_test \
           asn1_encode_test asn1_decode_test asn1_string_table_test asn1_stable_parse_test \
           x509_time_test x509_dup_cert_test x509_check_cert_pkey_test \
@@ -631,6 +631,78 @@ IF[{- !$disabled{tests} -}]
   SOURCE[generated_test]=generated_test.c
   INCLUDE[generated_test]=../include ../apps/include
   DEPEND[generated_test]=../libcrypto libtestutil.a
+
+  SOURCE[gen_gpt_oss_120b_t1_tp0p95_fp0p3_s3_260827_003042]=gen_gpt_oss_120b_t1_tp0p95_fp0p3_s3_260827_003042.c
+  INCLUDE[gen_gpt_oss_120b_t1_tp0p95_fp0p3_s3_260827_003042]=../include ../apps/include
+  DEPEND[gen_gpt_oss_120b_t1_tp0p95_fp0p3_s3_260827_003042]=../libcrypto libtestutil.a
+
+  SOURCE[gen_gpt_oss_120b_t1_tp0p95_fp0p3_s2_260827_003017]=gen_gpt_oss_120b_t1_tp0p95_fp0p3_s2_260827_003017.c
+  INCLUDE[gen_gpt_oss_120b_t1_tp0p95_fp0p3_s2_260827_003017]=../include ../apps/include
+  DEPEND[gen_gpt_oss_120b_t1_tp0p95_fp0p3_s2_260827_003017]=../libcrypto libtestutil.a
+
+  SOURCE[gen_gpt_oss_120b_t1_tp0p95_fp0p3_s1_260827_002953]=gen_gpt_oss_120b_t1_tp0p95_fp0p3_s1_260827_002953.c
+  INCLUDE[gen_gpt_oss_120b_t1_tp0p95_fp0p3_s1_260827_002953]=../include ../apps/include
+  DEPEND[gen_gpt_oss_120b_t1_tp0p95_fp0p3_s1_260827_002953]=../libcrypto libtestutil.a
+
+  SOURCE[gen_gpt_oss_120b_t1_tp0p95_fp0_s3_260827_002911]=gen_gpt_oss_120b_t1_tp0p95_fp0_s3_260827_002911.c
+  INCLUDE[gen_gpt_oss_120b_t1_tp0p95_fp0_s3_260827_002911]=../include ../apps/include
+  DEPEND[gen_gpt_oss_120b_t1_tp0p95_fp0_s3_260827_002911]=../libcrypto libtestutil.a
+
+  SOURCE[gen_gpt_oss_120b_t1_tp0p95_fp0_s2_260827_002846]=gen_gpt_oss_120b_t1_tp0p95_fp0_s2_260827_002846.c
+  INCLUDE[gen_gpt_oss_120b_t1_tp0p95_fp0_s2_260827_002846]=../include ../apps/include
+  DEPEND[gen_gpt_oss_120b_t1_tp0p95_fp0_s2_260827_002846]=../libcrypto libtestutil.a
+
+  SOURCE[gen_gpt_oss_120b_t1_tp0p95_fp0_s1_260827_002816]=gen_gpt_oss_120b_t1_tp0p95_fp0_s1_260827_002816.c
+  INCLUDE[gen_gpt_oss_120b_t1_tp0p95_fp0_s1_260827_002816]=../include ../apps/include
+  DEPEND[gen_gpt_oss_120b_t1_tp0p95_fp0_s1_260827_002816]=../libcrypto libtestutil.a
+
+  SOURCE[gen_gpt_oss_120b_t0p8_tp0p95_fp0p3_s3_260827_002739]=gen_gpt_oss_120b_t0p8_tp0p95_fp0p3_s3_260827_002739.c
+  INCLUDE[gen_gpt_oss_120b_t0p8_tp0p95_fp0p3_s3_260827_002739]=../include ../apps/include
+  DEPEND[gen_gpt_oss_120b_t0p8_tp0p95_fp0p3_s3_260827_002739]=../libcrypto libtestutil.a
+
+  SOURCE[gen_gpt_oss_120b_t0p8_tp0p95_fp0p3_s2_260827_002715]=gen_gpt_oss_120b_t0p8_tp0p95_fp0p3_s2_260827_002715.c
+  INCLUDE[gen_gpt_oss_120b_t0p8_tp0p95_fp0p3_s2_260827_002715]=../include ../apps/include
+  DEPEND[gen_gpt_oss_120b_t0p8_tp0p95_fp0p3_s2_260827_002715]=../libcrypto libtestutil.a
+
+  SOURCE[gen_gpt_oss_120b_t0p8_tp0p95_fp0p3_s1_260827_002651]=gen_gpt_oss_120b_t0p8_tp0p95_fp0p3_s1_260827_002651.c
+  INCLUDE[gen_gpt_oss_120b_t0p8_tp0p95_fp0p3_s1_260827_002651]=../include ../apps/include
+  DEPEND[gen_gpt_oss_120b_t0p8_tp0p95_fp0p3_s1_260827_002651]=../libcrypto libtestutil.a
+
+  SOURCE[gen_gpt_oss_120b_t0p8_tp0p95_fp0_s3_260827_002632]=gen_gpt_oss_120b_t0p8_tp0p95_fp0_s3_260827_002632.c
+  INCLUDE[gen_gpt_oss_120b_t0p8_tp0p95_fp0_s3_260827_002632]=../include ../apps/include
+  DEPEND[gen_gpt_oss_120b_t0p8_tp0p95_fp0_s3_260827_002632]=../libcrypto libtestutil.a
+
+  SOURCE[gen_gpt_oss_120b_t0p8_tp0p95_fp0_s2_260827_002553]=gen_gpt_oss_120b_t0p8_tp0p95_fp0_s2_260827_002553.c
+  INCLUDE[gen_gpt_oss_120b_t0p8_tp0p95_fp0_s2_260827_002553]=../include ../apps/include
+  DEPEND[gen_gpt_oss_120b_t0p8_tp0p95_fp0_s2_260827_002553]=../libcrypto libtestutil.a
+
+  SOURCE[gen_gpt_oss_120b_t0p8_tp0p95_fp0_s1_260827_002516]=gen_gpt_oss_120b_t0p8_tp0p95_fp0_s1_260827_002516.c
+  INCLUDE[gen_gpt_oss_120b_t0p8_tp0p95_fp0_s1_260827_002516]=../include ../apps/include
+  DEPEND[gen_gpt_oss_120b_t0p8_tp0p95_fp0_s1_260827_002516]=../libcrypto libtestutil.a
+
+  SOURCE[gen_gpt_oss_120b_t0p2_tp0p95_fp0p3_s3_260827_002454]=gen_gpt_oss_120b_t0p2_tp0p95_fp0p3_s3_260827_002454.c
+  INCLUDE[gen_gpt_oss_120b_t0p2_tp0p95_fp0p3_s3_260827_002454]=../include ../apps/include
+  DEPEND[gen_gpt_oss_120b_t0p2_tp0p95_fp0p3_s3_260827_002454]=../libcrypto libtestutil.a
+
+  SOURCE[gen_gpt_oss_120b_t0p2_tp0p95_fp0p3_s2_260827_002434]=gen_gpt_oss_120b_t0p2_tp0p95_fp0p3_s2_260827_002434.c
+  INCLUDE[gen_gpt_oss_120b_t0p2_tp0p95_fp0p3_s2_260827_002434]=../include ../apps/include
+  DEPEND[gen_gpt_oss_120b_t0p2_tp0p95_fp0p3_s2_260827_002434]=../libcrypto libtestutil.a
+
+  SOURCE[gen_gpt_oss_120b_t0p2_tp0p95_fp0p3_s1_260827_002402]=gen_gpt_oss_120b_t0p2_tp0p95_fp0p3_s1_260827_002402.c
+  INCLUDE[gen_gpt_oss_120b_t0p2_tp0p95_fp0p3_s1_260827_002402]=../include ../apps/include
+  DEPEND[gen_gpt_oss_120b_t0p2_tp0p95_fp0p3_s1_260827_002402]=../libcrypto libtestutil.a
+
+  SOURCE[gen_gpt_oss_120b_t0p2_tp0p95_fp0_s3_260827_002336]=gen_gpt_oss_120b_t0p2_tp0p95_fp0_s3_260827_002336.c
+  INCLUDE[gen_gpt_oss_120b_t0p2_tp0p95_fp0_s3_260827_002336]=../include ../apps/include
+  DEPEND[gen_gpt_oss_120b_t0p2_tp0p95_fp0_s3_260827_002336]=../libcrypto libtestutil.a
+
+  SOURCE[gen_gpt_oss_120b_t0p2_tp0p95_fp0_s2_260827_002311]=gen_gpt_oss_120b_t0p2_tp0p95_fp0_s2_260827_002311.c
+  INCLUDE[gen_gpt_oss_120b_t0p2_tp0p95_fp0_s2_260827_002311]=../include ../apps/include
+  DEPEND[gen_gpt_oss_120b_t0p2_tp0p95_fp0_s2_260827_002311]=../libcrypto libtestutil.a
+
+  SOURCE[gen_gpt_oss_120b_t0p2_tp0p95_fp0_s1_260827_002233]=gen_gpt_oss_120b_t0p2_tp0p95_fp0_s1_260827_002233.c
+  INCLUDE[gen_gpt_oss_120b_t0p2_tp0p95_fp0_s1_260827_002233]=../include ../apps/include
+  DEPEND[gen_gpt_oss_120b_t0p2_tp0p95_fp0_s1_260827_002233]=../libcrypto libtestutil.a
 
   SOURCE[generated_test_3]=generated_test_3.c
   INCLUDE[generated_test_3]=../include ../apps/include

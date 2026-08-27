@@ -1,0 +1,75 @@
+        /* Test AES‑256‑CBC encryption/decryption using the BIO_f_cipher filter.
+         * The test encrypts a known plaintext, then decrypts the resulting
+         * ciphertext and verifies that the original plaintext is recovered.
+         */
+        const unsigned char key[32] = {
+            0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,
+            0x08,0x09,0x0a,0x0b,0x0c,0x0d,0x0e,0x0f,
+            0x10,0x11,0x12,0x13,0x14,0x15,0x16,0x17,
+            0x18,0x19,0x1a,0x1b,0x1c,0x1d,0x1e,0x1f
+        };
+        const unsigned char iv[16] = {
+            0xa0,0xa1,0xa2,0xa3,0xa4,0xa5,0xa6,0xa7,
+            0xa8,0xa9,0xaa,0xab,0xac,0xad,0xae,0xaf
+        };
+        const unsigned char plaintext[] =
+            "OpenSSL BIO cipher test vector";
+        const size_t pt_len = sizeof(plaintext) - 1; /* exclude NUL */
+
+        /* ---------- Encryption ---------- */
+        BIO *mem_enc = BIO_new(BIO_s_mem());
+        TEST_ptr(mem_enc);
+        BIO *enc = BIO_new(BIO_f_cipher());
+        TEST_ptr(enc);
+        /* set up encryption (e = 1) */
+        TEST_true(BIO_set_cipher(enc, EVP_aes_256_cbc(),
+                               key, iv, 1));
+        /* chain: enc -> mem_enc */
+        BIO_push(enc, mem_enc);
+
+        /* write plaintext */
+        TEST_int_eq(BIO_write(enc, plaintext, (int)pt_len), (int)pt_len);
+        /* flush to force final block processing */
+        TEST_int_eq(BIO_flush(enc), 1);
+
+        /* obtain ciphertext from the memory BIO */
+        char *cdata = NULL;
+        long c_len = BIO_get_mem_data(mem_enc, &cdata);
+        TEST_int_gt(c_len, 0);
+
+        /* clean up encryption chain */
+        BIO_free_all(enc); /* also frees mem_enc */
+
+        /* ---------- Decryption ---------- */
+        BIO *mem_dec = BIO_new_mem_buf(cdata, c_len);
+        TEST_ptr(mem_dec);
+        BIO *dec = BIO_new(BIO_f_cipher());
+        TEST_ptr(dec);
+        /* set up decryption (e = 0) */
+        TEST_true(BIO_set_cipher(dec, EVP_aes_256_cbc(),
+                               key, iv, 0));
+        /* chain: dec -> mem_dec */
+        BIO_push(dec, mem_dec);
+
+        unsigned char outbuf[256];
+        size_t out_off = 0;
+        for (;;) {
+            int r = BIO_read(dec, outbuf + out_off,
+                             (int)(sizeof(outbuf) - out_off));
+            if (r > 0) {
+                out_off += r;
+                continue;
+            }
+            if (r == 0)
+                break;
+            if (!BIO_should_retry(dec))
+                break;
+        }
+
+        /* verify length and content */
+        TEST_int_eq((int)out_off, (int)pt_len);
+        TEST_mem_eq(outbuf, out_off, plaintext, pt_len);
+
+        BIO_free_all(dec); /* also frees mem_dec */
+
+        return 1;

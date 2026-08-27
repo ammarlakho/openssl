@@ -1,0 +1,31 @@
+{
+  "name": "gen_gpt_oss_120b_t1_tp0p95_fp0p3_s2_260827_003017",
+  "index": 17,
+  "created_utc": "2026-08-26T22:30:17+00:00",
+  "profile": "gptoss",
+  "api_url": "http://10.80.20.101:11434/v1/chat/completions",
+  "model": "gpt-oss:120b",
+  "params": {
+    "temperature": 1.0,
+    "top_p": 0.95,
+    "frequency_penalty": 0.3,
+    "seed": 2
+  },
+  "source": "crypto/evp/bio_enc.c",
+  "task": "AES-256 CBC BIO round-trip vs fixed vectors",
+  "test_fn": "test_bio_enc_generated",
+  "snippet": true,
+  "context": {
+    "refs": 4,
+    "lines": 50,
+    "keywords": []
+  },
+  "ok": true,
+  "error": null,
+  "duration_s": 25.4,
+  "dir": "test/generated/gen_gpt_oss_120b_t1_tp0p95_fp0p3_s2_260827_003017",
+  "source_file": "test/gen_gpt_oss_120b_t1_tp0p95_fp0p3_s2_260827_003017.c",
+  "binary": "test/gen_gpt_oss_120b_t1_tp0p95_fp0p3_s2_260827_003017",
+  "prompt_sha256": "0624621bc3ca9678",
+  "registered": true
+}

@@ -29,7 +29,7 @@ def log(message: str) -> None:
 class GenParams:
     """Sampling knobs. Every field is optional: None means "server default".
 
-    Kept as one object so a sweep can vary decoding without touching the call
+    Kept as one object so an experiment can vary decoding without touching the call
     sites, and so the exact settings behind a generated test can be recorded.
     """
 

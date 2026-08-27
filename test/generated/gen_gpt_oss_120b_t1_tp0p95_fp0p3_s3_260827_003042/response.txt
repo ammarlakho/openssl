@@ -1,0 +1,126 @@
+    {
+        /* Test vectors */
+        const unsigned char key[32] = {
+            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+            0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+            0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+            0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f
+        };
+        const unsigned char iv[16] = {
+            0x00, 0x01, 0x02, 0x03,
+            0x04, 0x05, 0x06, 0x07,
+            0x08, 0x09, 0x0a, 0x0b,
+            0x0c, 0x0d, 0x0e, 0x0f
+        };
+        const unsigned char plaintext[] =
+            "The quick brown fox jumps over the lazy dog";
+        const int plaintext_len = (int)strlen((const char *)plaintext);
+
+        /* -----------------------------------------------------------------
+         * 1. Compute the expected ciphertext using the EVP API directly.
+         * ----------------------------------------------------------------- */
+        unsigned char expected[64];
+        int expected_len = 0, fin_len = 0;
+        EVP_CIPHER_CTX *ectx = EVP_CIPHER_CTX_new();
+
+        if (!TEST_ptr(ectx))
+            return 0;
+        if (!TEST_int_eq(EVP_EncryptInit_ex(ectx, EVP_aes_256_cbc(),
+                                          NULL, key, iv), 1))
+            goto err_ectx;
+        if (!TEST_int_eq(EVP_EncryptUpdate(ectx,
+                                          expected, &expected_len,
+                                          plaintext, plaintext_len), 1))
+            goto err_ectx;
+        if (!TEST_int_eq(EVP_EncryptFinal_ex(ectx,
+                                            expected + expected_len,
+                                            &fin_len), 1))
+            goto err_ectx;
+        expected_len += fin_len;
+        EVP_CIPHER_CTX_free(ectx);
+        ectx = NULL;
+
+        /* -----------------------------------------------------------------
+         * 2. Encrypt via the cipher BIO and compare with the expected data.
+         * ----------------------------------------------------------------- */
+        BIO *mem = BIO_new(BIO_s_mem());
+        BIO *enc = BIO_new(BIO_f_cipher());
+
+        if (!TEST_ptr(mem) || !TEST_ptr(enc))
+            goto err_cleanup;
+        BIO_push(enc, mem);
+        if (!TEST_int_eq(BIO_set_cipher(enc,
+                                        EVP_aes_256_cbc(),
+                                        key, iv, 1), 1))
+            goto err_enc;
+        if (!TEST_int_eq(BIO_write(enc, plaintext, plaintext_len),
+                         plaintext_len))
+            goto err_enc;
+        if (!TEST_int_eq(BIO_flush(enc), 1))
+            goto err_enc;
+
+        /* Retrieve the ciphertext from the memory BIO */
+        char *ciphertext = NULL;
+        long ciphertext_len = BIO_get_mem_data(mem, &ciphertext);
+        if (!TEST_int_eq((int)ciphertext_len, expected_len))
+            goto err_enc;
+        if (!TEST_mem_eq(ciphertext, (size_t)ciphertext_len,
+                         expected, (size_t)expected_len))
+            goto err_enc;
+
+        /* -----------------------------------------------------------------
+         * 3. Decrypt the ciphertext via a second cipher BIO and verify it
+         *    matches the original plaintext.
+         * ----------------------------------------------------------------- */
+        BIO *mem_in = BIO_new_mem_buf(ciphertext, (int)ciphertext_len);
+        BIO *dec = BIO_new(BIO_f_cipher());
+
+        if (!TEST_ptr(mem_in) || !TEST_ptr(dec))
+            goto err_enc;
+        BIO_push(dec, mem_in);
+        if (!TEST_int_eq(BIO_set_cipher(dec,
+                                        EVP_aes_256_cbc(),
+                                        key, iv, 0), 1))
+            goto err_dec;
+
+        unsigned char outbuf[64];
+        int outlen = BIO_read(dec, outbuf, sizeof(outbuf));
+        if (!TEST_int_gt(outlen, 0))
+            goto err_dec;
+
+        /* Read any remaining data */
+        int total = outlen;
+        while ((outlen = BIO_read(dec,
+                                 outbuf + total,
+                                 sizeof(outbuf) - total)) > 0) {
+            total += outlen;
+        }
+
+        if (!TEST_int_eq(total, plaintext_len))
+            goto err_dec;
+        if (!TEST_mem_eq(outbuf, (size_t)total,
+                         plaintext, (size_t)plaintext_len))
+            goto err_dec;
+
+        /* -----------------------------------------------------------------
+         * 4. Clean up and report success.
+         * ----------------------------------------------------------------- */
+        BIO_free_all(enc);   /* also frees mem */
+        BIO_free_all(dec);   /* also frees mem_in */
+        return 1;
+
+    /* -----------------------------------------------------------------
+     * Error handling
+     * ----------------------------------------------------------------- */
+    err_dec:
+        BIO_free_all(dec);
+    err_enc:
+        BIO_free_all(enc);
+    err_cleanup:
+        if (ectx)
+            EVP_CIPHER_CTX_free(ectx);
+        return 0;
+    err_ectx:
+        EVP_CIPHER_CTX_free(ectx);
+        return 0;
+    }

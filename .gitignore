@@ -330,3 +330,5 @@ compile_commands.json
 
 *.tmp
 default.profraw
+
+/thesis-work/mutation/*/

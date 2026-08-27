@@ -1,1 +1,7 @@
 llm-models.env
+
+# Mutation-run output: per-run directories are build/mull logs and Mull's
+# full Elements report (tens of MB a night). The append-only record of every
+# run -- results.jsonl and results.csv -- is the part worth keeping.
+experiments/results/*/
+experiments/results/configure.log

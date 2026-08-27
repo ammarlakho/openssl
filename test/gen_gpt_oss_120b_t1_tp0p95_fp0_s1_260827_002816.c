@@ -1,0 +1,138 @@
+/*
+ * Copyright 2026 The OpenSSL Project Authors. All Rights Reserved.
+ *
+ * Licensed under the Apache License 2.0 (the "License").  You may not use
+ * this file except in compliance with the License.  You can obtain a copy
+ * in the file LICENSE in the source distribution or at
+ * https://www.openssl.org/source/license.html
+ *
+ * Skeleton for: gen_gpt_oss_120b_t1_tp0p95_fp0_s1_260827_002816.c — fill ONLY BEGIN_LLM_REPLACE .. END_LLM_REPLACE (past LLM).
+ */
+
+#include <string.h>
+
+#include <openssl/bio.h>
+#include <openssl/evp.h>
+#include <openssl/crypto.h>
+
+#include "testutil.h"
+
+static int test_bio_enc_generated(void)
+{
+    /* BEGIN_LLM_REPLACE */
+        /* Test AES‑256‑CBC BIO encryption/decryption round‑trip against the
+         * EVP API reference implementation.
+         */
+        const unsigned char key[32] = {
+            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+            0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+            0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+            0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f
+        };
+        const unsigned char iv[16] = {
+            0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7,
+            0xa8, 0xa9, 0xaa, 0xab, 0xac, 0xad, 0xae, 0xaf
+        };
+        const unsigned char plaintext[] =
+            "The quick brown fox jumps over the lazy dog";
+        const int pt_len = (int)sizeof(plaintext) - 1; /* exclude NUL */
+
+        unsigned char expected_ct[128];
+        unsigned char outbuf[128];
+        int outlen1 = 0, outlen2 = 0, total_ct_len = 0;
+        int read_len = 0;
+        const char *enc_data = NULL;
+        long enc_len = 0;
+        int ret = 0;
+
+        /* ------------------------------------------------------------
+         * Produce reference ciphertext using the EVP API.
+         * ------------------------------------------------------------ */
+        EVP_CIPHER_CTX *ref_ctx = EVP_CIPHER_CTX_new();
+        if (!TEST_ptr(ref_ctx))
+            goto end;
+        if (!TEST_true(EVP_EncryptInit_ex(ref_ctx,
+                                         EVP_aes_256_cbc(),
+                                         NULL, key, iv)))
+            goto end;
+        if (!TEST_true(EVP_EncryptUpdate(ref_ctx,
+                                         expected_ct, &outlen1,
+                                         plaintext, pt_len)))
+            goto end;
+        if (!TEST_true(EVP_EncryptFinal_ex(ref_ctx,
+                                           expected_ct + outlen1, &outlen2)))
+            goto end;
+        total_ct_len = outlen1 + outlen2;
+        EVP_CIPHER_CTX_free(ref_ctx);
+        ref_ctx = NULL;
+
+        /* ------------------------------------------------------------
+         * Encrypt using the BIO filter.
+         * ------------------------------------------------------------ */
+        BIO *mem_enc = BIO_new(BIO_s_mem());
+        BIO *benc = BIO_new(BIO_f_cipher());
+
+        if (!TEST_ptr(mem_enc) || !TEST_ptr(benc))
+            goto end;
+
+        if (!TEST_true(BIO_set_cipher(benc,
+                                      EVP_aes_256_cbc(),
+                                      key, iv, 1)))      /* encrypt */
+            goto end;
+
+        /* Push the memory BIO underneath the cipher BIO. */
+        benc = BIO_push(benc, mem_enc);
+
+        if (!TEST_int_eq(BIO_write(benc, plaintext, pt_len), pt_len))
+            goto end;
+        if (!TEST_true(BIO_flush(benc)))               /* finalise encryption */
+            goto end;
+
+        enc_len = BIO_get_mem_data(mem_enc, &enc_data);
+        if (!TEST_long_eq(enc_len, total_ct_len))
+            goto end;
+        if (!TEST_mem_eq(enc_data, (size_t)enc_len,
+                         expected_ct, (size_t)total_ct_len))
+            goto end;
+
+        /* ------------------------------------------------------------
+         * Decrypt using a fresh BIO filter.
+         * ------------------------------------------------------------ */
+        BIO *mem_dec = BIO_new_mem_buf(enc_data, (int)enc_len);
+        BIO *bdec = BIO_new(BIO_f_cipher());
+
+        if (!TEST_ptr(mem_dec) || !TEST_ptr(bdec))
+            goto end;
+
+        if (!TEST_true(BIO_set_cipher(bdec,
+                                      EVP_aes_256_cbc(),
+                                      key, iv, 0)))      /* decrypt */
+            goto end;
+
+        bdec = BIO_push(bdec, mem_dec);
+
+        /* Read the decrypted data back. */
+        read_len = BIO_read(bdec, outbuf, sizeof(outbuf));
+        if (!TEST_int_eq(read_len, pt_len))
+            goto end;
+        if (!TEST_mem_eq(outbuf, (size_t)read_len,
+                         plaintext, (size_t)pt_len))
+            goto end;
+
+        ret = 1;   /* success */
+
+    end:
+        /* Cleanup */
+        if (ref_ctx != NULL)
+            EVP_CIPHER_CTX_free(ref_ctx);
+        BIO_free_all(benc);
+        BIO_free_all(bdec);
+        return ret;
+    /* END_LLM_REPLACE */
+}
+
+int setup_tests(void)
+{
+    ADD_TEST(test_bio_enc_generated);
+    return 1;
+}
