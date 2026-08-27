@@ -205,6 +205,20 @@ def _context_options(config: Dict[str, Any], stub_path: Path) -> ContextOptions:
     )
 
 
+def _out_root(out_dir) -> Path:
+    """Resolve --out-dir the way every other path argument resolves: against the
+    repo root, so it means the same thing from any cwd."""
+    return paths.resolve_under_repo(str(out_dir)) if out_dir else OUT_DIR
+
+
+def _rel(path: Path) -> str:
+    """Repo-relative where possible; absolute for an --out-dir outside the tree."""
+    try:
+        return str(path.relative_to(paths.REPO_ROOT))
+    except ValueError:
+        return str(path)
+
+
 def _taken(out_root: Path, name: str) -> bool:
     return (out_root / name).exists() or (paths.TEST_DIR / "{}.c".format(name)).exists()
 
@@ -236,6 +250,26 @@ def plan(config: Dict[str, Any], grid_override: Dict[str, List[Any]]) -> List[Di
     return runs
 
 
+def _check_axes(endpoint, runs: List[Dict[str, Any]]) -> None:
+    """Refuse to sweep an axis the chosen backend cannot apply.
+
+    The Claude CLI has no temperature, top_p or seed. Sweeping them there would
+    still produce runs -- named `..._t0p2_s3`, recorded with those params in
+    meta.json -- but every one of them would be the backend's default decoding,
+    so the results would compare settings that were never sent. Better to stop
+    before the first call than to record a sweep that did not happen.
+    """
+    swept = {axis for run in runs for axis in run["point"]}
+    bad = sorted(swept & set(endpoint.unsupported))
+    if bad:
+        raise ExperimentError(
+            "profile '{}' ({} backend) cannot vary {}. Drop {} from the grid; "
+            "use \"repeats\" for run-to-run variance, and \"reasoning_effort\" "
+            "for the one knob this backend does have.".format(
+                endpoint.profile, endpoint.kind, ", ".join(bad),
+                "it" if len(bad) == 1 else "them"))
+
+
 def run_experiment(
     config: Dict[str, Any],
     grid_override: Optional[Dict[str, List[Any]]] = None,
@@ -248,24 +282,26 @@ def run_experiment(
     if limit is not None:
         runs = runs[:limit]
 
-    out_root = Path(out_dir) if out_dir else OUT_DIR
+    out_root = _out_root(out_dir)
     source = config["source"]
     test_fn = config.get("test_fn") or _default_test_fn(source)
     source_path = paths.resolve_under_repo(source)
     if not source_path.is_file():
         raise ExperimentError("source under test not found: {}".format(source_path))
 
-    profile, api_url, model, _ = backends.resolve_profile(
+    endpoint = backends.resolve_profile(
         config.get("profile"), config.get("api_url"), config.get("model"))
+    _check_axes(endpoint, runs)
 
-    backends.log(">> [Experiment] {} run(s) | profile={} model={} | out={}".format(
-        len(runs), profile, model, out_root))
+    backends.log(">> [Experiment] {} run(s) | profile={} {} | out={}".format(
+        len(runs), endpoint.profile, endpoint.describe(), out_root))
 
     results = []
     for i, run in enumerate(runs, 1):
         point = run["point"]
         stamp = datetime.now().strftime("%y%m%d_%H%M%S")
-        name = run_name(config.get("prefix") or "gen", model, point, stamp, run["repeat"])
+        name = run_name(config.get("prefix") or "gen", endpoint.model, point, stamp,
+                        run["repeat"])
 
         backends.log(">> [Experiment] ({}/{}) {} [{}]".format(
             i, len(runs), name,
@@ -275,9 +311,10 @@ def run_experiment(
             "name": name,
             "index": i,
             "created_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            "profile": profile,
-            "api_url": api_url,
-            "model": model,
+            "profile": endpoint.profile,
+            "backend": endpoint.kind,
+            "api_url": endpoint.api_url,
+            "model": endpoint.model,
             "params": point,
             "source": source,
             "task": config.get("task") or "",
@@ -291,7 +328,7 @@ def run_experiment(
 
         if dry_run:
             record["dry_run"] = True
-            record["dir"] = str((out_root / name).relative_to(paths.REPO_ROOT))
+            record["dir"] = _rel(out_root / name)
             results.append(record)
             continue
 
@@ -302,7 +339,7 @@ def run_experiment(
 
         test_c = paths.TEST_DIR / "{}.c".format(name)
         test_c.write_text(stub.generate_stub(name, test_fn, source_path))
-        record["dir"] = str(run_dir.relative_to(paths.REPO_ROOT))
+        record["dir"] = _rel(run_dir)
         record["source_file"] = str(test_c.relative_to(paths.REPO_ROOT))
         record["binary"] = "test/{}".format(name)
 
@@ -313,7 +350,7 @@ def run_experiment(
             record["prompt_sha256"] = hashlib.sha256(prompt.encode()).hexdigest()[:16]
 
             params = GenParams(**point)
-            reply = backends.run_remote(prompt, profile, api_url, model, params)
+            reply = backends.run_prompt(prompt, endpoint, params)
             (run_dir / "response.txt").write_text(reply)
             stub.fill_stub(test_c, reply)
             record["ok"] = True
@@ -359,7 +396,7 @@ def _append_index(out_root: Path, record: Dict[str, Any]) -> None:
 
 def list_runs(out_root: Optional[Path] = None) -> List[Dict[str, Any]]:
     """Every run present on disk, newest name last."""
-    out_root = Path(out_root) if out_root else OUT_DIR
+    out_root = _out_root(out_root)
     if not out_root.is_dir():
         return []
 
@@ -406,7 +443,7 @@ def prune(names: List[str], all_runs: bool = False, failed_only: bool = False,
     .c still carrying the stub's LLM_REPLACE markers is deleted, so a
     hand-written test can never be removed by a name collision here.
     """
-    out_root = Path(out_root) if out_root else OUT_DIR
+    out_root = _out_root(out_root)
     chosen = select_runs(names, all_runs, failed_only, out_root)
     if not chosen:
         backends.log(">> [Prune] nothing to delete")

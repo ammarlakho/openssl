@@ -332,3 +332,13 @@ compile_commands.json
 default.profraw
 
 /thesis-work/mutation/*/
+
+test/generated/*/
+
+test/*.o
+
+# Ignore all files starting with this prefix
+test/gen_*
+
+# Exceptions: Do not ignore C source files
+!test/gen_*.c

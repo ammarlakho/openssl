@@ -77,9 +77,10 @@ def _params_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--reasoning-effort",
-        choices=("low", "medium", "high"),
+        choices=backends.CLI_EFFORTS,
         default=None,
-        help="reasoning models (gpt-oss); ignored by servers that do not support it",
+        help="reasoning models (gpt-oss: low|medium|high; the claude profile "
+             "also takes xhigh|max); ignored by servers that do not support it",
     )
     parser.add_argument(
         "--frequency-penalty",
@@ -238,6 +239,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="skip make; the test binaries already exist",
     )
     mut.add_argument(
+        "--source",
+        help="source under test for the focus score, used for tests that have "
+             "no generated run to read it from (default: {})".format(DEFAULT_SOURCE),
+    )
+    mut.add_argument(
         "--rerun",
         choices=sorted(mutation.RERUN_MODES),
         default="none",
@@ -257,7 +263,8 @@ def build_parser() -> argparse.ArgumentParser:
     rep.add_argument(
         "--rebuild-csv",
         action="store_true",
-        help="regenerate that CSV from results.jsonl, which is the source of truth",
+        help="regenerate that CSV from results.jsonl (source of truth), "
+             "one row per test name -- the newest run of each",
     )
     rep.add_argument(
         "--history",
@@ -314,9 +321,8 @@ def cmd_generate(args: argparse.Namespace) -> None:
         args.stub = args.into
 
     prompt = build_prompt(args.source, _options_from(args))
-    result = backends.run_remote(
-        prompt, args.profile, args.api_url, args.model, _params_from(args)
-    )
+    endpoint = backends.resolve_profile(args.profile, args.api_url, args.model)
+    result = backends.run_prompt(prompt, endpoint, _params_from(args))
 
     if args.into:
         target = paths.resolve_under_repo(args.into)
@@ -400,6 +406,7 @@ def cmd_mutate(args: argparse.Namespace) -> None:
         configure=not args.no_configure,
         build=not args.no_build,
         rerun=args.rerun,
+        source=args.source or DEFAULT_SOURCE,
     )
     if not results:
         return
@@ -416,8 +423,8 @@ def cmd_mutate(args: argparse.Namespace) -> None:
 def cmd_mutation_report(args: argparse.Namespace) -> None:
     if args.rebuild_csv:
         path = mutation.rebuild_csv()
-        print("rebuilt {} from {} run(s)".format(
-            path, len(mutation.load_results(latest_only=False))))
+        print("rebuilt {} with {} test(s), newest run each".format(
+            path, len(mutation.load_results(latest_only=True))))
         return
 
     if args.survivors:

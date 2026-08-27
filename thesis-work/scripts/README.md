@@ -150,6 +150,19 @@ get an `_rN` component in their names.
 `test_fn` defaults to `test_<source stem>_generated`, and `context` takes the
 prompt options below (`refs`, `lines`, `keywords`, `impl_lines`, `notes`).
 
+A grid axis the chosen backend cannot apply is a hard error, raised before the
+first call. `bio_enc_claude.json` is the shape that suits the `cli` backend:
+`reasoning_effort` on the grid, `repeats` for variance, no decoding axes.
+
+```bash
+./thesis-work/scripts/llm_test.py experiment \
+  thesis-work/experiments/configs/bio_enc_claude.json --dry-run
+```
+
+Note that `--grid` overrides *one axis*, it does not replace the grid — so
+pointing `--profile claude` at a config that sweeps `temperature` still fails on
+the axes left behind. A run on another backend wants its own config.
+
 ### Experiment flags
 
 | Flag | Meaning |
@@ -160,7 +173,7 @@ prompt options below (`refs`, `lines`, `keywords`, `impl_lines`, `notes`).
 | `--repeats N` / `--sleep S` | Override the config |
 | `--profile` / `--model` / `--api-url` | Override the endpoint |
 | `--source` / `--task` / `--test-fn` / `--prefix` | Override the scenario |
-| `--out-dir DIR` | Write somewhere other than `test/generated` |
+| `--out-dir DIR` | Write somewhere other than `test/generated`; a relative path resolves against the repo root |
 | `--no-register` | Skip the `test/build.info` entries |
 
 So a one-off variation needs no new config file:
@@ -200,7 +213,7 @@ numbers:
 
 ```bash
 ./thesis-work/scripts/llm_test.py mutate --all        # every successful run
-./thesis-work/scripts/llm_test.py mutate <name>...    # or just these
+./thesis-work/scripts/llm_test.py mutate <name>...    # or just these (use only filename without .c)
 ```
 
 The coverage reconfigure (`make clean` + `./config`) is the slow part and does
@@ -310,7 +323,8 @@ truth: if the columns change, or runs predate the CSV,
 ./thesis-work/scripts/llm_test.py mutation-report --rebuild-csv
 ```
 
-regenerates it from every recorded run.
+regenerates it, one row per test name: where a name was mutated more than once,
+only its newest run survives the rebuild. `results.jsonl` keeps them all.
 
 `run.json` and `results.jsonl` also carry `survived_by_mutator`, which is the
 more interesting breakdown: a test that kills every `cxx_eq_to_ne` but no
@@ -328,7 +342,8 @@ Without `--snippet` the model emits a whole compilable `.c`:
 
 ## Endpoint
 
-`generate` POSTs to an OpenAI-compatible chat-completions endpoint.
+`generate` POSTs to an OpenAI-compatible chat-completions endpoint, or shells
+out to the Claude Code CLI — see [Backends](#backends).
 
 ```bash
 ./thesis-work/scripts/llm_test.py generate --profile gemma \
@@ -360,6 +375,40 @@ is just two more lines — no code change. Resolution order, highest first:
 
 Blank values in the env file are ignored rather than treated as set.
 
+### Backends
+
+`resolve_profile` returns an `Endpoint` naming one of two backends, and every
+caller goes through it, so `generate` and `experiment` treat the two alike:
+
+| Backend | Profiles | Transport | Auth |
+|---------|----------|-----------|------|
+| `http` | `gptoss`, `gemma`, anything with a `<PROFILE>_API_URL` | POST to `/v1/chat/completions` | `<PROFILE>_API_KEY`, if the server wants one |
+| `cli` | `claude` | one headless `claude -p` turn | the logged-in subscription; no API key |
+
+The `claude` profile needs no `CLAUDE_API_URL` — passing `--api-url` with it is
+an error. `CLAUDE_MODEL` picks the model (an alias like `sonnet` or `opus`, or a
+full id like `claude-sonnet-5`); with none set it defaults to `sonnet`.
+
+```bash
+./thesis-work/scripts/llm_test.py generate --profile claude \
+  --into test/generated_test.c \
+  --snippet --task "BIO cipher operations" crypto/evp/bio_enc.c
+```
+
+The CLI is an agent harness, not a completions endpoint, so the call strips it
+back to a plain one-shot chat: no tools, no settings/skills/MCP pickup, no saved
+session, and a system prompt of our own. It also runs in an empty temporary
+directory rather than in the repo, because the CLI reads `CLAUDE.md`, project
+settings and auto-memory from its cwd — inside this repo that quietly adds
+~200 tokens of unrelated context to every prompt.
+
+**The `cli` backend has no decoding controls.** `temperature`, `top_p`, `seed`,
+`max_tokens` and the three penalties do not exist on that path; only the model
+and the reasoning effort are selectable. `generate` warns when you pass one and
+carries on; `experiment` refuses before the first call, so a sweep is never
+recorded under settings that were never applied. For run-to-run variance on
+this backend use `repeats`, not `seed`.
+
 ## Prompt options
 
 Shared by `generate` and `context`:
@@ -387,7 +436,7 @@ defaults apply.
 | `--top-p F` | Nucleus sampling |
 | `--seed N` | Sampling seed, where the server honours it |
 | `--max-tokens N` | Cap on generated tokens; raise if output comes back truncated |
-| `--reasoning-effort low\|medium\|high` | Reasoning models (gpt-oss) |
+| `--reasoning-effort LEVEL` | `low\|medium\|high` for gpt-oss; the `claude` profile also takes `xhigh\|max` |
 | `--frequency-penalty F` | OpenAI repetition penalty, ~-2..2, 0 = off |
 | `--presence-penalty F` | OpenAI presence penalty, ~-2..2, 0 = off |
 | `--repetition-penalty F` | vLLM-only multiplicative penalty, ~1.0..2.0, 1.0 = off |
@@ -403,8 +452,9 @@ accepts its own `repetition_penalty` as an extra top-level field; Ollama
 ignores unknown fields, so sending it is harmless but has no effect there.
 Prefer `frequency_penalty` for anything compared across both models.
 
-`seed` is honoured by both servers; `reasoning_effort` only means something to
-gpt-oss.
+`seed` is honoured by both HTTP servers; `reasoning_effort` means something to
+gpt-oss and to the `claude` profile. None of the decoding knobs reach the
+`claude` profile — see [Backends](#backends).
 
 Token usage and a truncation warning are logged to stderr on every call.
 

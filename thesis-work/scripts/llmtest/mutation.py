@@ -233,8 +233,14 @@ def run_one(name: str, source: Optional[str] = None, build: bool = True,
     return record
 
 
-def _targets(names: List[str], all_runs: bool, out_dir: Optional[str]) -> List[Dict[str, Any]]:
-    """Resolve names to (name, source, params), preferring what the experiment recorded."""
+def _targets(names: List[str], all_runs: bool, out_dir: Optional[str],
+             source: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Resolve names to (name, source, params), preferring what the experiment recorded.
+
+    A test written by hand has no run directory and so no recorded source; the
+    focus view is what an experiment is really asking about, so rather than
+    silently dropping it, `source` stands in for those.
+    """
     runs = {r["name"]: r for r in experiment.list_runs(out_dir) if r.get("ok")}
     if all_runs:
         chosen = sorted(runs)
@@ -245,9 +251,12 @@ def _targets(names: List[str], all_runs: bool, out_dir: Optional[str]) -> List[D
         meta = runs.get(name, {})
         if not all_runs and name not in runs and not (paths.TEST_DIR / "{}.c".format(name)).is_file():
             raise MutationError("no generated run or test source named {}".format(name))
+        focus = meta.get("source") or source
+        if focus and not meta.get("source"):
+            log(">> [Mutation] {}: no recorded source; focusing on {}".format(name, focus))
         targets.append({
             "name": name,
-            "source": meta.get("source"),
+            "source": focus,
             "model": meta.get("model"),
             "params": meta.get("params") or {},
         })
@@ -274,7 +283,7 @@ def recorded() -> Dict[str, bool]:
 
 def run_batch(names: List[str], all_runs: bool = False, out_dir: Optional[str] = None,
               configure: bool = True, build: bool = True,
-              rerun: str = "none") -> List[Dict[str, Any]]:
+              rerun: str = "none", source: Optional[str] = None) -> List[Dict[str, Any]]:
     """Mutate several tests. The coverage reconfigure is shared across them.
 
     See RERUN_MODES for which already-recorded tests are run again; the rest
@@ -283,7 +292,7 @@ def run_batch(names: List[str], all_runs: bool = False, out_dir: Optional[str] =
     """
     if rerun not in RERUN_MODES:
         raise MutationError("unknown --rerun mode: {}".format(rerun))
-    targets = _targets(names, all_runs, out_dir)
+    targets = _targets(names, all_runs, out_dir, source)
     MUTATION_DIR.mkdir(parents=True, exist_ok=True)
 
     allowed = RERUN_MODES[rerun]
@@ -465,9 +474,10 @@ def rebuild_csv(path: Optional[Path] = None) -> Path:
     """Regenerate the CSV from results.jsonl, which is the source of truth.
 
     For picking up runs recorded before the CSV existed, or after editing the
-    columns. Every run is kept, not just the newest per name.
+    columns. One row per test name -- the newest run wins, so a name remutated
+    after a fix appears once, with the score that still holds.
     """
     path = Path(path) if path else RESULTS_CSV
     if path.is_file():
         path.unlink()
-    return append_csv(load_results(latest_only=False), path)
+    return append_csv(load_results(latest_only=True), path)

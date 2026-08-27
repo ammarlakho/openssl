@@ -1,0 +1,19 @@
+{
+  "source": "crypto/evp/bio_enc.c",
+  "task": "AES-256 CBC BIO round-trip vs fixed vectors",
+  "test_fn": "test_bio_enc_generated",
+  "prefix": "gen",
+  "profile": "claude",
+  "model": "sonnet",
+  "snippet": true,
+  "repeats": 10,
+  "sleep": 0,
+  "context": {
+    "refs": 4,
+    "lines": 50,
+    "keywords": []
+  },
+  "grid": {
+    "reasoning_effort": ["low", "medium", "high"]
+  }
+}

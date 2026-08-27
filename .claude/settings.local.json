@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(./thesis-work/scripts/llm_test.py context *)",
+      "Bash(cd *)",
+      "Bash(python3 *)"
+    ]
+  }
+}
