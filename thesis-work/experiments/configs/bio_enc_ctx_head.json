@@ -1,0 +1,21 @@
+{
+  "source": "crypto/evp/bio_enc.c",
+  "task": "AES-256 CBC BIO round-trip vs fixed vectors",
+  "test_fn": "test_bio_enc_generated",
+  "prefix": "ctxhead",
+  "profile": "gptoss",
+  "snippet": true,
+  "repeats": 1,
+  "sleep": 0,
+  "context": {
+    "refs": 4,
+    "lines": 50,
+    "ref_slice": "head",
+    "keywords": []
+  },
+  "grid": {
+    "temperature": [0.5],
+    "top_p": [1.0],
+    "seed": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+  }
+}

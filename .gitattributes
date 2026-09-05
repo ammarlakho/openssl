@@ -12,6 +12,9 @@ Configurations/*.norelease.conf         export-ignore
 # However, .ctags.d is precious, so we don't ignore that.
 .*                                      export-ignore
 .ctags.d                                !export-ignore
+/.gitignore                             !export-ignore
+thesis-work/.gitignore                  !export-ignore
+thesis-work/mull-mutation/.dockerignore !export-ignore
 util/mktar.sh                           export-ignore
 krb5                                    export-ignore
 pyca-cryptography                       export-ignore

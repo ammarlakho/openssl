@@ -1,0 +1,77 @@
+{
+  "source": "crypto/bn/bn_add.c",
+  "n_requested": 5,
+  "created_utc": "2026-08-28T12:59:09+00:00",
+  "profile": "gptoss",
+  "model": "gpt-oss:120b",
+  "temperature": 0.5,
+  "top_p": 1.0,
+  "prompt": "Below is the complete source of crypto/bn/bn_add.c from OpenSSL.\n\n/*\n * Copyright 1995-2020 The OpenSSL Project Authors. All Rights Reserved.\n *\n * Licensed under the Apache License 2.0 (the \"License\").  You may not use\n * this file except in compliance with the License.  You can obtain a copy\n * in the file LICENSE in the source distribution or at\n * https://www.openssl.org/source/license.html\n */\n\n#include \"internal/cryptlib.h\"\n#include \"bn_local.h\"\n\n/* signed add of b to a. */\nint BN_add(BIGNUM *r, const BIGNUM *a, const BIGNUM *b)\n{\n    int ret, r_neg, cmp_res;\n\n    bn_check_top(a);\n    bn_check_top(b);\n\n    if (a->neg == b->neg) {\n        r_neg = a->neg;\n        ret = BN_uadd(r, a, b);\n    } else {\n        cmp_res = BN_ucmp(a, b);\n        if (cmp_res > 0) {\n            r_neg = a->neg;\n            ret = BN_usub(r, a, b);\n        } else if (cmp_res < 0) {\n            r_neg = b->neg;\n            ret = BN_usub(r, b, a);\n        } else {\n            r_neg = 0;\n            BN_zero(r);\n            ret = 1;\n        }\n    }\n\n    r->neg = r_neg;\n    bn_check_top(r);\n    return ret;\n}\n\n/* signed sub of b from a. */\nint BN_sub(BIGNUM *r, const BIGNUM *a, const BIGNUM *b)\n{\n    int ret, r_neg, cmp_res;\n\n    bn_check_top(a);\n    bn_check_top(b);\n\n    if (a->neg != b->neg) {\n        r_neg = a->neg;\n        ret = BN_uadd(r, a, b);\n    } else {\n        cmp_res = BN_ucmp(a, b);\n        if (cmp_res > 0) {\n            r_neg = a->neg;\n            ret = BN_usub(r, a, b);\n        } else if (cmp_res < 0) {\n            r_neg = !b->neg;\n            ret = BN_usub(r, b, a);\n        } else {\n            r_neg = 0;\n            BN_zero(r);\n            ret = 1;\n        }\n    }\n\n    r->neg = r_neg;\n    bn_check_top(r);\n    return ret;\n}\n\n/* unsigned add of b to a, r can be equal to a or b. */\nint BN_uadd(BIGNUM *r, const BIGNUM *a, const BIGNUM *b)\n{\n    int max, min, dif;\n    const BN_ULONG *ap, *bp;\n    BN_ULONG *rp, carry, t1, t2;\n\n    bn_check_top(a);\n    bn_check_top(b);\n\n    if (a->top < b->top) {\n        const BIGNUM *tmp;\n\n        tmp = a;\n        a = b;\n        b = tmp;\n    }\n    max = a->top;\n    min = b->top;\n    dif = max - min;\n\n    if (bn_wexpand(r, max + 1) == NULL)\n        return 0;\n\n    r->top = max;\n\n    ap = a->d;\n    bp = b->d;\n    rp = r->d;\n\n    carry = bn_add_words(rp, ap, bp, min);\n    rp += min;\n    ap += min;\n\n    while (dif) {\n        dif--;\n        t1 = *(ap++);\n        t2 = (t1 + carry) & BN_MASK2;\n        *(rp++) = t2;\n        carry &= (t2 == 0);\n    }\n    *rp = carry;\n    r->top += carry;\n\n    r->neg = 0;\n    bn_check_top(r);\n    return 1;\n}\n\n/* unsigned subtraction of b from a, a must be larger than b. */\nint BN_usub(BIGNUM *r, const BIGNUM *a, const BIGNUM *b)\n{\n    int max, min, dif;\n    BN_ULONG t1, t2, borrow, *rp;\n    const BN_ULONG *ap, *bp;\n\n    bn_check_top(a);\n    bn_check_top(b);\n\n    max = a->top;\n    min = b->top;\n    dif = max - min;\n\n    if (dif < 0) { /* hmm... should not be happening */\n        ERR_raise(ERR_LIB_BN, BN_R_ARG2_LT_ARG3);\n        return 0;\n    }\n\n    if (bn_wexpand(r, max) == NULL)\n        return 0;\n\n    ap = a->d;\n    bp = b->d;\n    rp = r->d;\n\n    borrow = bn_sub_words(rp, ap, bp, min);\n    ap += min;\n    rp += min;\n\n    while (dif) {\n        dif--;\n        t1 = *(ap++);\n        t2 = (t1 - borrow) & BN_MASK2;\n        *(rp++) = t2;\n        borrow &= (t1 == 0);\n    }\n\n    while (max && *--rp == 0)\n        max--;\n\n    r->top = max;\n    r->neg = 0;\n    bn_pollute(r);\n\n    return 1;\n}\n\n\nPropose 5 distinct test scenarios for this file. Each scenario must\nexercise different behaviour of the code above - not the same behaviour\nwith different values.\n\nOutput exactly 5 lines, numbered, one scenario per line, each a single\nsentence naming what the test does. No code, no explanation, no preamble.\n",
+  "samples": [
+    {
+      "seed": 1,
+      "ok": true,
+      "error": null,
+      "response": "1. Test BN_add with two positive BIGNUMs of different lengths causing a carry into a new most\u2011significant word.  \n2. Test BN_add with a positive and a negative BIGNUM where the positive operand has larger magnitude, exercising the BN_usub branch.  \n3. Test BN_add with a positive and a negative BIGNUM where the negative operand has larger magnitude, exercising the swapped BN_usub branch and result sign.  \n4. Test BN_sub where both operands have the same sign and the minuend is larger, exercising BN_usub with multi\u2011word borrow propagation.  \n5. Test BN_sub where both operands are equal, verifying that the result is zero and the sign is cleared.",
+      "scenarios": [
+        "Test BN_add with two positive BIGNUMs of different lengths causing a carry into a new most\u2011significant word.",
+        "Test BN_add with a positive and a negative BIGNUM where the positive operand has larger magnitude, exercising the BN_usub branch.",
+        "Test BN_add with a positive and a negative BIGNUM where the negative operand has larger magnitude, exercising the swapped BN_usub branch and result sign.",
+        "Test BN_sub where both operands have the same sign and the minuend is larger, exercising BN_usub with multi\u2011word borrow propagation.",
+        "Test BN_sub where both operands are equal, verifying that the result is zero and the sign is cleared."
+      ]
+    },
+    {
+      "seed": 2,
+      "ok": true,
+      "error": null,
+      "response": "1. Test BN_add with two positive numbers that generate a carry beyond the most\u2011significant word.  \n2. Test BN_add with operands of opposite signs where the first operand has larger absolute value, causing a signed subtraction via BN_usub.  \n3. Test BN_add with operands of opposite signs that have equal absolute values, expecting the result to be zero and non\u2011negative.  \n4. Test BN_sub with both operands positive but the second larger than the first, invoking the signed subtraction path that flips the sign and uses BN_usub.  \n5. Test BN_usub where the subtraction requires borrowing across several words, verifying correct borrow propagation and top\u2011word trimming.",
+      "scenarios": [
+        "Test BN_add with two positive numbers that generate a carry beyond the most\u2011significant word.",
+        "Test BN_add with operands of opposite signs where the first operand has larger absolute value, causing a signed subtraction via BN_usub.",
+        "Test BN_add with operands of opposite signs that have equal absolute values, expecting the result to be zero and non\u2011negative.",
+        "Test BN_sub with both operands positive but the second larger than the first, invoking the signed subtraction path that flips the sign and uses BN_usub.",
+        "Test BN_usub where the subtraction requires borrowing across several words, verifying correct borrow propagation and top\u2011word trimming."
+      ]
+    },
+    {
+      "seed": 3,
+      "ok": true,
+      "error": null,
+      "response": "1. Verify BN_add with two positive numbers whose sum generates a new most\u2011significant word (carry overflow).  \n2. Verify BN_add with operands of opposite signs where the first operand\u2019s magnitude exceeds the second\u2019s, producing a negative result.  \n3. Verify BN_add where the two operands are equal in magnitude but opposite in sign, resulting in zero.  \n4. Verify BN_usub where subtraction must propagate a borrow across multiple words of the dividend.  \n5. Verify BN_uadd when the destination BIGNUM r is the same object as one of the source operands.",
+      "scenarios": [
+        "Verify BN_add with two positive numbers whose sum generates a new most\u2011significant word (carry overflow).",
+        "Verify BN_add with operands of opposite signs where the first operand\u2019s magnitude exceeds the second\u2019s, producing a negative result.",
+        "Verify BN_add where the two operands are equal in magnitude but opposite in sign, resulting in zero.",
+        "Verify BN_usub where subtraction must propagate a borrow across multiple words of the dividend.",
+        "Verify BN_uadd when the destination BIGNUM r is the same object as one of the source operands."
+      ]
+    },
+    {
+      "seed": 4,
+      "ok": true,
+      "error": null,
+      "response": "1. Test BN_add with two positive numbers whose sum overflows the current top word, requiring allocation of an extra word.  \n2. Test BN_add with operands of opposite signs where the magnitude of the first operand is larger, confirming the result retains the first operand\u2019s sign.  \n3. Test BN_add where the operands are equal in magnitude but opposite in sign, expecting a zero result with a non\u2011negative sign.  \n4. Test BN_sub with both operands negative and the second operand\u2019s magnitude larger, verifying sign inversion and correct subtraction.  \n5. Test BN_usub where subtraction triggers a borrow that propagates across several words, ensuring proper handling and trimming of leading zeros.",
+      "scenarios": [
+        "Test BN_add with two positive numbers whose sum overflows the current top word, requiring allocation of an extra word.",
+        "Test BN_add with operands of opposite signs where the magnitude of the first operand is larger, confirming the result retains the first operand\u2019s sign.",
+        "Test BN_add where the operands are equal in magnitude but opposite in sign, expecting a zero result with a non\u2011negative sign.",
+        "Test BN_sub with both operands negative and the second operand\u2019s magnitude larger, verifying sign inversion and correct subtraction.",
+        "Test BN_usub where subtraction triggers a borrow that propagates across several words, ensuring proper handling and trimming of leading zeros."
+      ]
+    },
+    {
+      "seed": 5,
+      "ok": true,
+      "error": null,
+      "response": "1. Test BN_add with two positive numbers whose sum overflows into a new most\u2011significant word.  \n2. Test BN_add with operands of opposite signs where the first operand has larger magnitude, producing a negative result.  \n3. Test BN_add with operands of opposite signs having equal magnitude, expecting the result to be zero and non\u2011negative.  \n4. Test BN_sub with both operands positive where the minuend is smaller than the subtrahend, yielding a negative result.  \n5. Test BN_usub where the subtraction requires borrowing across several words, verifying correct borrow propagation.",
+      "scenarios": [
+        "Test BN_add with two positive numbers whose sum overflows into a new most\u2011significant word.",
+        "Test BN_add with operands of opposite signs where the first operand has larger magnitude, producing a negative result.",
+        "Test BN_add with operands of opposite signs having equal magnitude, expecting the result to be zero and non\u2011negative.",
+        "Test BN_sub with both operands positive where the minuend is smaller than the subtrahend, yielding a negative result.",
+        "Test BN_usub where the subtraction requires borrowing across several words, verifying correct borrow propagation."
+      ]
+    }
+  ]
+}

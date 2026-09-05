@@ -1,0 +1,121 @@
+{
+ "design": "Arm 1 stage 1, five scenarios per call, seeds 1-10 (superseded)",
+ "scenarios": "the sentences are no longer in scenarios_bio_enc.json, which now holds the one-per-call design; they are preserved verbatim as scenario_text in thesis-work/experiments/arms/rows_bio_enc.jsonl, keyed by scenario_seed/scenario_idx (s<seed>.<idx>)",
+ "classified_by": "hand, reading each sentence against the behaviours the never-killed mutants require (thesis-work/experiments/triage/bio_enc.json)",
+ "reviewed_utc": "2026-08-28",
+ "note": "Rows are the behaviours a test must exhibit to kill a surviving mutant, not generic test categories. A scenario counts only if it names the behaviour, not if it merely operates in the same function. The stimulus/oracle split is recorded because it is the finding: a scenario can propose the right input and still not propose anything that would observe the difference.",
+ "behaviours": {
+  "zero-length read (L76)": {
+   "needs": "BIO_read(b, buf, 0) and check the return",
+   "scenarios": []
+  },
+  "cipher status query (L77)": {
+   "needs": "BIO_get_cipher_status == 1",
+   "scenarios": []
+  },
+  "init flag observed (L80, L438)": {
+   "needs": "BIO_get_init between BIO_new and BIO_set_cipher",
+   "scenarios": [
+    "s1.1",
+    "s3.1"
+   ]
+  },
+  "leak on free (L89, L93, L96)": {
+   "needs": "a leak detector; not available in this harness",
+   "scenarios": [
+    "s6.1",
+    "s10.1"
+   ]
+  },
+  "call-pattern oracle (L134, L180, L199)": {
+   "needs": "a source BIO that records the size of each read",
+   "scenarios": []
+  },
+  "stream cipher, block size 1 (L140)": {
+   "needs": "ChaCha20 or RC4",
+   "scenarios": [
+    "s1.3",
+    "s6.2",
+    "s8.3"
+   ]
+  },
+  "retry / non-blocking (L208, L233, L263, L293)": {
+   "needs": "a peer that sets retry flags, then BIO_should_retry",
+   "scenarios": [
+    "s2.2",
+    "s4.2",
+    "s5.2",
+    "s9.2",
+    "s7.2"
+   ]
+  },
+  "sink returns exactly 0 (L254, L283)": {
+   "needs": "a custom sink BIO whose write returns 0",
+   "scenarios": []
+  },
+  "short read, outl <= 256 (L199)": {
+   "needs": "read in <=256-byte chunks from a full source",
+   "scenarios": [
+    "s3.2"
+   ]
+  }
+ },
+ "what_was_proposed_instead": {
+  "BIO_CTRL_FLUSH / CipherFinal": [
+   "s1.4",
+   "s2.4",
+   "s3.3",
+   "s4.4",
+   "s6.3",
+   "s7.4",
+   "s8.4",
+   "s9.4",
+   "s10.4",
+   "s2.3"
+  ],
+  "BIO_CTRL_RESET": [
+   "s2.5",
+   "s3.4",
+   "s5.4",
+   "s6.4",
+   "s7.2"
+  ],
+  "BIO_CTRL_DUP": [
+   "s4.5",
+   "s5.5",
+   "s6.5",
+   "s8.5",
+   "s10.5"
+  ],
+  "BIO_set_cipher / enc_new setup": [
+   "s1.1",
+   "s2.1",
+   "s3.1",
+   "s4.1",
+   "s5.1",
+   "s6.1",
+   "s7.1",
+   "s7.5",
+   "s8.1",
+   "s9.1",
+   "s9.5",
+   "s10.1"
+  ],
+  "large payload > ENC_BLOCK_SIZE": [
+   "s1.2",
+   "s3.3",
+   "s10.3",
+   "s4.3"
+  ],
+  "ordinary read / decrypt path": [
+   "s5.3",
+   "s7.3",
+   "s8.2",
+   "s9.3",
+   "s10.2"
+  ],
+  "CipherUpdate failure / error path": [
+   "s3.5"
+  ]
+ }
+}

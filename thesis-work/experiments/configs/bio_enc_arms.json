@@ -1,0 +1,21 @@
+{
+  "source": "crypto/evp/bio_enc.c",
+  "task": "replaced per run by the arm: a model-written scenario (Arm 1) or a mutant block (Arm 2)",
+  "test_fn": "test_bio_enc_generated",
+  "prefix": "arm",
+  "profile": "gptoss",
+  "snippet": true,
+  "repeats": 1,
+  "sleep": 0,
+  "context": {
+    "refs": 4,
+    "lines": 250,
+    "ref_slice": "test",
+    "keywords": []
+  },
+  "grid": {
+    "seed": [
+      1
+    ]
+  }
+}

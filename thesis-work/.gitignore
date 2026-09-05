@@ -1,0 +1,28 @@
+# Local endpoint configuration: API URLs, model names, and possibly a key.
+# Copy llm-models.env.example and fill it in.
+llm-models.env
+
+# Mutation-run output: per-run directories are build/mull logs and Mull's
+# full Elements report. The append-only record of every
+# run -- results.jsonl and results.csv -- is the part worth keeping.
+experiments/results/*/
+experiments/results/configure.log
+
+# One-off copies made while analysing a run.
+experiments/results/*_copy.csv
+
+# experiments/arms/: ad-hoc dumps made while analysing a run, read by nothing
+# under scripts/. The scenario corpus in the same directory is NOT ignored --
+# it is arm 1's stage-1 output and arm 2 and arms-report both consume it, and
+# re-running the model would not reproduce it.
+experiments/arms/rows_*.jsonl
+experiments/arms/report_*.txt
+experiments/arms/arm2_targets_*.json
+
+# Results write-ups. The analysis and its discussion belong in the thesis
+# report; this tree is the source needed to reproduce the numbers, so the
+# prose that interprets them is kept out of it.
+docs/analysis/
+
+__pycache__/
+*.pyc

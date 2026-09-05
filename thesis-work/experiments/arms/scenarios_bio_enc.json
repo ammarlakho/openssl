@@ -1,0 +1,512 @@
+{
+  "source": "crypto/evp/bio_enc.c",
+  "scenarios_per_call": 1,
+  "created_utc": "2026-08-28T19:07:22+00:00",
+  "profile": "gptoss",
+  "model": "gpt-oss:120b",
+  "temperature": null,
+  "top_p": null,
+  "prompt": "Below is the complete source of crypto/evp/bio_enc.c from OpenSSL.\n\n/*\n * Copyright 1995-2025 The OpenSSL Project Authors. All Rights Reserved.\n *\n * Licensed under the Apache License 2.0 (the \"License\").  You may not use\n * this file except in compliance with the License.  You can obtain a copy\n * in the file LICENSE in the source distribution or at\n * https://www.openssl.org/source/license.html\n */\n\n#define OPENSSL_SUPPRESS_DEPRECATED /* for BIO_get_callback */\n\n#include <stdio.h>\n#include <errno.h>\n#include \"internal/cryptlib.h\"\n#include <openssl/buffer.h>\n#include <openssl/evp.h>\n#include \"internal/bio.h\"\n\nstatic int enc_write(BIO *h, const char *buf, int num);\nstatic int enc_read(BIO *h, char *buf, int size);\nstatic long enc_ctrl(BIO *h, int cmd, long arg1, void *arg2);\nstatic int enc_new(BIO *h);\nstatic int enc_free(BIO *data);\nstatic long enc_callback_ctrl(BIO *h, int cmd, BIO_info_cb *fps);\n#define ENC_BLOCK_SIZE (1024 * 4)\n#define ENC_MIN_CHUNK (256)\n#define BUF_OFFSET (ENC_MIN_CHUNK + EVP_MAX_BLOCK_LENGTH)\n\ntypedef struct enc_struct {\n    int buf_len;\n    int buf_off;\n    int cont; /* <= 0 when finished */\n    int finished;\n    int ok; /* bad decrypt */\n    EVP_CIPHER_CTX *cipher;\n    unsigned char *read_start, *read_end;\n    /*\n     * buf is larger than ENC_BLOCK_SIZE because EVP_DecryptUpdate can return\n     * up to a block more data than is presented to it\n     */\n    unsigned char buf[BUF_OFFSET + ENC_BLOCK_SIZE];\n} BIO_ENC_CTX;\n\nstatic const BIO_METHOD methods_enc = {\n    BIO_TYPE_CIPHER,\n    \"cipher\",\n    bwrite_conv,\n    enc_write,\n    bread_conv,\n    enc_read,\n    NULL, /* enc_puts, */\n    NULL, /* enc_gets, */\n    enc_ctrl,\n    enc_new,\n    enc_free,\n    enc_callback_ctrl,\n};\n\nconst BIO_METHOD *BIO_f_cipher(void)\n{\n    return &methods_enc;\n}\n\nstatic int enc_new(BIO *bi)\n{\n    BIO_ENC_CTX *ctx;\n\n    if ((ctx = OPENSSL_zalloc(sizeof(*ctx))) == NULL)\n        return 0;\n\n    ctx->cipher = EVP_CIPHER_CTX_new();\n    if (ctx->cipher == NULL) {\n        OPENSSL_free(ctx);\n        return 0;\n    }\n    ctx->cont = 1;\n    ctx->ok = 1;\n    ctx->read_end = ctx->read_start = &(ctx->buf[BUF_OFFSET]);\n    BIO_set_data(bi, ctx);\n    BIO_set_init(bi, 1);\n\n    return 1;\n}\n\nstatic int enc_free(BIO *a)\n{\n    BIO_ENC_CTX *b;\n\n    if (a == NULL)\n        return 0;\n\n    b = BIO_get_data(a);\n    if (b == NULL)\n        return 0;\n\n    EVP_CIPHER_CTX_free(b->cipher);\n    OPENSSL_clear_free(b, sizeof(BIO_ENC_CTX));\n    BIO_set_data(a, NULL);\n    BIO_set_init(a, 0);\n\n    return 1;\n}\n\nstatic int enc_read(BIO *b, char *out, int outl)\n{\n    int ret = 0, i, blocksize;\n    BIO_ENC_CTX *ctx;\n    BIO *next;\n\n    if (out == NULL)\n        return 0;\n    ctx = BIO_get_data(b);\n\n    next = BIO_next(b);\n    if ((ctx == NULL) || (next == NULL))\n        return 0;\n\n    /* First check if there are bytes decoded/encoded */\n    if (ctx->buf_len > 0) {\n        i = ctx->buf_len - ctx->buf_off;\n        if (i > outl)\n            i = outl;\n        memcpy(out, &(ctx->buf[ctx->buf_off]), i);\n        ret = i;\n        out += i;\n        outl -= i;\n        ctx->buf_off += i;\n        if (ctx->buf_len == ctx->buf_off) {\n            ctx->buf_len = 0;\n            ctx->buf_off = 0;\n        }\n    }\n\n    blocksize = EVP_CIPHER_CTX_get_block_size(ctx->cipher);\n\n    if (blocksize == 0)\n        return 0;\n\n    if (blocksize == 1)\n        blocksize = 0;\n\n    /*\n     * At this point, we have room of outl bytes and an empty buffer, so we\n     * should read in some more.\n     */\n\n    while (outl > 0) {\n        if (ctx->cont <= 0)\n            break;\n\n        if (ctx->read_start == ctx->read_end) { /* time to read more data */\n            ctx->read_end = ctx->read_start = &(ctx->buf[BUF_OFFSET]);\n            i = BIO_read(next, ctx->read_start, ENC_BLOCK_SIZE);\n            if (i > 0)\n                ctx->read_end += i;\n        } else {\n            i = ctx->read_end - ctx->read_start;\n        }\n\n        if (i <= 0) {\n            /* Should be continue next time we are called? */\n            if (!BIO_should_retry(next)) {\n                ctx->cont = i;\n                ctx->finished = 1;\n                i = EVP_CipherFinal_ex(ctx->cipher,\n                    ctx->buf, &(ctx->buf_len));\n                ctx->ok = i;\n                ctx->buf_off = 0;\n            } else {\n                ret = (ret == 0) ? i : ret;\n                break;\n            }\n        } else {\n            if (outl > ENC_MIN_CHUNK) {\n                /*\n                 * Depending on flags block cipher decrypt can write\n                 * one extra block and then back off, i.e. output buffer\n                 * has to accommodate extra block...\n                 */\n                int j = outl - blocksize, buf_len;\n\n                if (!EVP_CipherUpdate(ctx->cipher,\n                        (unsigned char *)out, &buf_len,\n                        ctx->read_start, i > j ? j : i)) {\n                    BIO_clear_retry_flags(b);\n                    return 0;\n                }\n                ret += buf_len;\n                out += buf_len;\n                outl -= buf_len;\n\n                if ((i -= j) <= 0) {\n                    ctx->read_start = ctx->read_end;\n                    continue;\n                }\n                ctx->read_start += j;\n            }\n            if (i > ENC_MIN_CHUNK)\n                i = ENC_MIN_CHUNK;\n            if (!EVP_CipherUpdate(ctx->cipher,\n                    ctx->buf, &ctx->buf_len,\n                    ctx->read_start, i)) {\n                BIO_clear_retry_flags(b);\n                ctx->ok = 0;\n                return 0;\n            }\n            ctx->read_start += i;\n            ctx->cont = 1;\n            /*\n             * Note: it is possible for EVP_CipherUpdate to decrypt zero\n             * bytes because this is or looks like the final block: if this\n             * happens we should retry and either read more data or decrypt\n             * the final block\n             */\n            if (ctx->buf_len == 0)\n                continue;\n        }\n\n        if (ctx->buf_len <= outl)\n            i = ctx->buf_len;\n        else\n            i = outl;\n        if (i <= 0)\n            break;\n        memcpy(out, ctx->buf, i);\n        ret += i;\n        ctx->buf_off = i;\n        outl -= i;\n        out += i;\n    }\n\n    BIO_clear_retry_flags(b);\n    BIO_copy_next_retry(b);\n    return ((ret == 0) ? ctx->cont : ret);\n}\n\nstatic int enc_write(BIO *b, const char *in, int inl)\n{\n    int ret = 0, n, i;\n    BIO_ENC_CTX *ctx;\n    BIO *next;\n\n    ctx = BIO_get_data(b);\n    next = BIO_next(b);\n    if ((ctx == NULL) || (next == NULL))\n        return 0;\n\n    ret = inl;\n\n    BIO_clear_retry_flags(b);\n    n = ctx->buf_len - ctx->buf_off;\n    while (n > 0) {\n        i = BIO_write(next, &(ctx->buf[ctx->buf_off]), n);\n        if (i <= 0) {\n            BIO_copy_next_retry(b);\n            return i;\n        }\n        ctx->buf_off += i;\n        n -= i;\n    }\n    /* at this point all pending data has been written */\n\n    if ((in == NULL) || (inl <= 0))\n        return 0;\n\n    ctx->buf_off = 0;\n    while (inl > 0) {\n        n = (inl > ENC_BLOCK_SIZE) ? ENC_BLOCK_SIZE : inl;\n        if (!EVP_CipherUpdate(ctx->cipher,\n                ctx->buf, &ctx->buf_len,\n                (const unsigned char *)in, n)) {\n            BIO_clear_retry_flags(b);\n            ctx->ok = 0;\n            return 0;\n        }\n        inl -= n;\n        in += n;\n\n        ctx->buf_off = 0;\n        n = ctx->buf_len;\n        while (n > 0) {\n            i = BIO_write(next, &(ctx->buf[ctx->buf_off]), n);\n            if (i <= 0) {\n                BIO_copy_next_retry(b);\n                return (ret == inl) ? i : ret - inl;\n            }\n            n -= i;\n            ctx->buf_off += i;\n        }\n        ctx->buf_len = 0;\n        ctx->buf_off = 0;\n    }\n    BIO_copy_next_retry(b);\n    return ret;\n}\n\nstatic long enc_ctrl(BIO *b, int cmd, long num, void *ptr)\n{\n    BIO *dbio;\n    BIO_ENC_CTX *ctx, *dctx;\n    long ret = 1;\n    int i;\n    EVP_CIPHER_CTX **c_ctx;\n    BIO *next;\n    int pend;\n\n    ctx = BIO_get_data(b);\n    next = BIO_next(b);\n    if (ctx == NULL)\n        return 0;\n\n    switch (cmd) {\n    case BIO_CTRL_RESET:\n        ctx->ok = 1;\n        ctx->finished = 0;\n        if (!EVP_CipherInit_ex(ctx->cipher, NULL, NULL, NULL, NULL,\n                EVP_CIPHER_CTX_is_encrypting(ctx->cipher)))\n            return 0;\n        ret = BIO_ctrl(next, cmd, num, ptr);\n        break;\n    case BIO_CTRL_EOF: /* More to read */\n        if (ctx->cont <= 0)\n            ret = 1;\n        else\n            ret = BIO_ctrl(next, cmd, num, ptr);\n        break;\n    case BIO_CTRL_WPENDING:\n        ret = ctx->buf_len - ctx->buf_off;\n        if (ret <= 0)\n            ret = BIO_ctrl(next, cmd, num, ptr);\n        break;\n    case BIO_CTRL_PENDING: /* More to read in buffer */\n        ret = ctx->buf_len - ctx->buf_off;\n        if (ret <= 0)\n            ret = BIO_ctrl(next, cmd, num, ptr);\n        break;\n    case BIO_CTRL_FLUSH:\n        /* do a final write */\n    again:\n        while (ctx->buf_len != ctx->buf_off) {\n            pend = ctx->buf_len - ctx->buf_off;\n            i = enc_write(b, NULL, 0);\n            /*\n             * i should never be > 0 here because we didn't ask to write any\n             * new data. We stop if we get an error or we failed to make any\n             * progress writing pending data.\n             */\n            if (i < 0 || (ctx->buf_len - ctx->buf_off) == pend)\n                return i;\n        }\n\n        if (!ctx->finished) {\n            ctx->finished = 1;\n            ctx->buf_off = 0;\n            ret = EVP_CipherFinal_ex(ctx->cipher,\n                (unsigned char *)ctx->buf,\n                &(ctx->buf_len));\n            ctx->ok = (int)ret;\n            if (ret <= 0)\n                break;\n\n            /* push out the bytes */\n            goto again;\n        }\n\n        /* Finally flush the underlying BIO */\n        ret = BIO_ctrl(next, cmd, num, ptr);\n        BIO_copy_next_retry(b);\n        break;\n    case BIO_C_GET_CIPHER_STATUS:\n        ret = (long)ctx->ok;\n        break;\n    case BIO_C_DO_STATE_MACHINE:\n        BIO_clear_retry_flags(b);\n        ret = BIO_ctrl(next, cmd, num, ptr);\n        BIO_copy_next_retry(b);\n        break;\n    case BIO_C_GET_CIPHER_CTX:\n        c_ctx = (EVP_CIPHER_CTX **)ptr;\n        *c_ctx = ctx->cipher;\n        BIO_set_init(b, 1);\n        break;\n    case BIO_CTRL_DUP:\n        dbio = (BIO *)ptr;\n        dctx = BIO_get_data(dbio);\n        dctx->cipher = EVP_CIPHER_CTX_new();\n        if (dctx->cipher == NULL)\n            return 0;\n        ret = EVP_CIPHER_CTX_copy(dctx->cipher, ctx->cipher);\n        if (ret)\n            BIO_set_init(dbio, 1);\n        break;\n    default:\n        ret = BIO_ctrl(next, cmd, num, ptr);\n        break;\n    }\n    return ret;\n}\n\nstatic long enc_callback_ctrl(BIO *b, int cmd, BIO_info_cb *fp)\n{\n    BIO *next = BIO_next(b);\n\n    if (next == NULL)\n        return 0;\n\n    return BIO_callback_ctrl(next, cmd, fp);\n}\n\nint BIO_set_cipher(BIO *b, const EVP_CIPHER *c, const unsigned char *k,\n    const unsigned char *i, int e)\n{\n    BIO_ENC_CTX *ctx;\n    BIO_callback_fn_ex callback_ex;\n#ifndef OPENSSL_NO_DEPRECATED_3_0\n    long (*callback)(struct bio_st *, int, const char *, int, long, long) = NULL;\n#endif\n\n    ctx = BIO_get_data(b);\n    if (ctx == NULL)\n        return 0;\n\n    if ((callback_ex = BIO_get_callback_ex(b)) != NULL) {\n        if (callback_ex(b, BIO_CB_CTRL, (const char *)c, 0, BIO_CTRL_SET,\n                e, 1, NULL)\n            <= 0)\n            return 0;\n    }\n#ifndef OPENSSL_NO_DEPRECATED_3_0\n    else {\n        callback = BIO_get_callback(b);\n\n        if ((callback != NULL) && (callback(b, BIO_CB_CTRL, (const char *)c, BIO_CTRL_SET, e, 0L) <= 0))\n            return 0;\n    }\n#endif\n\n    BIO_set_init(b, 1);\n\n    if (!EVP_CipherInit_ex(ctx->cipher, c, NULL, k, i, e))\n        return 0;\n\n    if (callback_ex != NULL)\n        return callback_ex(b, BIO_CB_CTRL | BIO_CB_RETURN, (const char *)c, 0,\n            BIO_CTRL_SET, e, 1, NULL);\n#ifndef OPENSSL_NO_DEPRECATED_3_0\n    else if (callback != NULL)\n        return callback(b, BIO_CB_CTRL, (const char *)c, BIO_CTRL_SET, e, 1L);\n#endif\n    return 1;\n}\n\n\nName one test for this file.\n\nOutput a single sentence saying what the test does. No code, no explanation,\nno preamble, no numbering.\n",
+  "samples": [
+    {
+      "seed": 1,
+      "ok": true,
+      "error": null,
+      "response": "The test checks that a cipher BIO created with BIO_f_cipher can encrypt and then decrypt a data buffer using AES\u2011128\u2011CBC, confirming that the output after a full write, flush, and read cycle exactly matches the original plaintext.",
+      "scenario": "The test checks that a cipher BIO created with BIO_f_cipher can encrypt and then decrypt a data buffer using AES\u2011128\u2011CBC, confirming that the output after a full write, flush, and read cycle exactly matches the original plaintext.",
+      "scenarios": [
+        "The test checks that a cipher BIO created with BIO_f_cipher can encrypt and then decrypt a data buffer using AES\u2011128\u2011CBC, confirming that the output after a full write, flush, and read cycle exactly matches the original plaintext."
+      ]
+    },
+    {
+      "seed": 2,
+      "ok": true,
+      "error": null,
+      "response": "The test verifies that BIO_f_cipher can encrypt a known plaintext with a specified cipher and key, then decrypts the resulting ciphertext back to the original plaintext, confirming correct operation of the BIO cipher filter.",
+      "scenario": "The test verifies that BIO_f_cipher can encrypt a known plaintext with a specified cipher and key, then decrypts the resulting ciphertext back to the original plaintext, confirming correct operation of the BIO cipher filter.",
+      "scenarios": [
+        "The test verifies that BIO_f_cipher can encrypt a known plaintext with a specified cipher and key, then decrypts the resulting ciphertext back to the original plaintext, confirming correct operation of the BIO cipher filter."
+      ]
+    },
+    {
+      "seed": 3,
+      "ok": true,
+      "error": null,
+      "response": "Test that BIO_f_cipher correctly encrypts and decrypts a given plaintext using a specific cipher, key, and IV, and verifies that the ciphertext matches the expected result and that decryption restores the original plaintext.",
+      "scenario": "Test that BIO_f_cipher correctly encrypts and decrypts a given plaintext using a specific cipher, key, and IV, and verifies that the ciphertext matches the expected result and that decryption restores the original plaintext.",
+      "scenarios": [
+        "Test that BIO_f_cipher correctly encrypts and decrypts a given plaintext using a specific cipher, key, and IV, and verifies that the ciphertext matches the expected result and that decryption restores the original plaintext."
+      ]
+    },
+    {
+      "seed": 4,
+      "ok": true,
+      "error": null,
+      "response": "Test that encrypting a known plaintext with a specific cipher using BIO_f_cipher and BIO_write/BIO_read produces the expected ciphertext and correctly processes the final block on BIO_flush.",
+      "scenario": "Test that encrypting a known plaintext with a specific cipher using BIO_f_cipher and BIO_write/BIO_read produces the expected ciphertext and correctly processes the final block on BIO_flush.",
+      "scenarios": [
+        "Test that encrypting a known plaintext with a specific cipher using BIO_f_cipher and BIO_write/BIO_read produces the expected ciphertext and correctly processes the final block on BIO_flush."
+      ]
+    },
+    {
+      "seed": 5,
+      "ok": true,
+      "error": null,
+      "response": "The test encrypts a known plaintext with a specific key and IV using BIO_f_cipher (AES\u2011128\u2011CBC) and verifies that the resulting ciphertext matches the expected value and that BIO_flush correctly finalises the encryption.",
+      "scenario": "The test encrypts a known plaintext with a specific key and IV using BIO_f_cipher (AES\u2011128\u2011CBC) and verifies that the resulting ciphertext matches the expected value and that BIO_flush correctly finalises the encryption.",
+      "scenarios": [
+        "The test encrypts a known plaintext with a specific key and IV using BIO_f_cipher (AES\u2011128\u2011CBC) and verifies that the resulting ciphertext matches the expected value and that BIO_flush correctly finalises the encryption."
+      ]
+    },
+    {
+      "seed": 6,
+      "ok": true,
+      "error": null,
+      "response": "Verify that initializing a cipher BIO with a known key and IV, writing plaintext through it, and then reading back the encrypted data from the next BIO yields the expected ciphertext.",
+      "scenario": "Verify that initializing a cipher BIO with a known key and IV, writing plaintext through it, and then reading back the encrypted data from the next BIO yields the expected ciphertext.",
+      "scenarios": [
+        "Verify that initializing a cipher BIO with a known key and IV, writing plaintext through it, and then reading back the encrypted data from the next BIO yields the expected ciphertext."
+      ]
+    },
+    {
+      "seed": 7,
+      "ok": true,
+      "error": null,
+      "response": "Test that BIO_f_cipher encrypts and decrypts a known plaintext correctly using AES\u2011128\u2011CBC with a predefined key and IV.",
+      "scenario": "Test that BIO_f_cipher encrypts and decrypts a known plaintext correctly using AES\u2011128\u2011CBC with a predefined key and IV.",
+      "scenarios": [
+        "Test that BIO_f_cipher encrypts and decrypts a known plaintext correctly using AES\u2011128\u2011CBC with a predefined key and IV."
+      ]
+    },
+    {
+      "seed": 8,
+      "ok": true,
+      "error": null,
+      "response": "The test verifies that setting a cipher on a BIO with\u202fBIO_set_cipher, then writing plaintext through\u202fBIO_write and reading the resulting ciphertext (or vice\u2011versa for decryption) via\u202fBIO_read, produces the correct encrypted (or decrypted) output and properly updates the internal cipher context state.",
+      "scenario": "The test verifies that setting a cipher on a BIO with\u202fBIO_set_cipher, then writing plaintext through\u202fBIO_write and reading the resulting ciphertext (or vice\u2011versa for decryption) via\u202fBIO_read, produces the correct encrypted (or decrypted) output and properly updates the internal cipher context state.",
+      "scenarios": [
+        "The test verifies that setting a cipher on a BIO with\u202fBIO_set_cipher, then writing plaintext through\u202fBIO_write and reading the resulting ciphertext (or vice\u2011versa for decryption) via\u202fBIO_read, produces the correct encrypted (or decrypted) output and properly updates the internal cipher context state."
+      ]
+    },
+    {
+      "seed": 9,
+      "ok": true,
+      "error": null,
+      "response": "Verify that BIO_set_cipher initializes the cipher context and that encrypting data via BIO_write followed by BIO_flush produces the expected ciphertext while correctly managing the internal buffers.",
+      "scenario": "Verify that BIO_set_cipher initializes the cipher context and that encrypting data via BIO_write followed by BIO_flush produces the expected ciphertext while correctly managing the internal buffers.",
+      "scenarios": [
+        "Verify that BIO_set_cipher initializes the cipher context and that encrypting data via BIO_write followed by BIO_flush produces the expected ciphertext while correctly managing the internal buffers."
+      ]
+    },
+    {
+      "seed": 10,
+      "ok": true,
+      "error": null,
+      "response": "Test that BIO_set_cipher correctly initializes the EVP_CIPHER_CTX with the given cipher, key, IV, and encryption flag and returns success.",
+      "scenario": "Test that BIO_set_cipher correctly initializes the EVP_CIPHER_CTX with the given cipher, key, IV, and encryption flag and returns success.",
+      "scenarios": [
+        "Test that BIO_set_cipher correctly initializes the EVP_CIPHER_CTX with the given cipher, key, IV, and encryption flag and returns success."
+      ]
+    },
+    {
+      "seed": 11,
+      "ok": true,
+      "error": null,
+      "response": "The test verifies that a BIO chain built with BIO_f_cipher correctly encrypts a known plaintext using a specified cipher and key, then decrypts the output back to the original plaintext.",
+      "scenario": "The test verifies that a BIO chain built with BIO_f_cipher correctly encrypts a known plaintext using a specified cipher and key, then decrypts the output back to the original plaintext.",
+      "scenarios": [
+        "The test verifies that a BIO chain built with BIO_f_cipher correctly encrypts a known plaintext using a specified cipher and key, then decrypts the output back to the original plaintext."
+      ]
+    },
+    {
+      "seed": 12,
+      "ok": true,
+      "error": null,
+      "response": "Verify that BIO_f_cipher correctly encrypts data when writing through a chain of BIOs and subsequently decrypts it when reading, ensuring the output matches the original plaintext for multiple block sizes and handling of final block flushing.",
+      "scenario": "Verify that BIO_f_cipher correctly encrypts data when writing through a chain of BIOs and subsequently decrypts it when reading, ensuring the output matches the original plaintext for multiple block sizes and handling of final block flushing.",
+      "scenarios": [
+        "Verify that BIO_f_cipher correctly encrypts data when writing through a chain of BIOs and subsequently decrypts it when reading, ensuring the output matches the original plaintext for multiple block sizes and handling of final block flushing."
+      ]
+    },
+    {
+      "seed": 13,
+      "ok": true,
+      "error": null,
+      "response": "Test that BIO_f_cipher encrypts a known plaintext using a specific cipher, key, and IV and verifies that the resulting ciphertext matches the expected output.",
+      "scenario": "Test that BIO_f_cipher encrypts a known plaintext using a specific cipher, key, and IV and verifies that the resulting ciphertext matches the expected output.",
+      "scenarios": [
+        "Test that BIO_f_cipher encrypts a known plaintext using a specific cipher, key, and IV and verifies that the resulting ciphertext matches the expected output."
+      ]
+    },
+    {
+      "seed": 14,
+      "ok": true,
+      "error": null,
+      "response": "The test verifies that BIO_f_cipher correctly encrypts and decrypts data using a chosen cipher (e.g., AES\u2011128\u2011CBC) by writing plaintext through a BIO chain and reading back the matching ciphertext or original plaintext.",
+      "scenario": "The test verifies that BIO_f_cipher correctly encrypts and decrypts data using a chosen cipher (e.g., AES\u2011128\u2011CBC) by writing plaintext through a BIO chain and reading back the matching ciphertext or original plaintext.",
+      "scenarios": [
+        "The test verifies that BIO_f_cipher correctly encrypts and decrypts data using a chosen cipher (e.g., AES\u2011128\u2011CBC) by writing plaintext through a BIO chain and reading back the matching ciphertext or original plaintext."
+      ]
+    },
+    {
+      "seed": 15,
+      "ok": true,
+      "error": null,
+      "response": "Test that BIO_f_cipher correctly encrypts a known plaintext using a specific cipher, key, and IV and produces the expected ciphertext output.",
+      "scenario": "Test that BIO_f_cipher correctly encrypts a known plaintext using a specific cipher, key, and IV and produces the expected ciphertext output.",
+      "scenarios": [
+        "Test that BIO_f_cipher correctly encrypts a known plaintext using a specific cipher, key, and IV and produces the expected ciphertext output."
+      ]
+    },
+    {
+      "seed": 16,
+      "ok": true,
+      "error": null,
+      "response": "Test that BIO_f_cipher correctly encrypts data using a specified EVP_CIPHER, key, and IV and produces the expected ciphertext output.",
+      "scenario": "Test that BIO_f_cipher correctly encrypts data using a specified EVP_CIPHER, key, and IV and produces the expected ciphertext output.",
+      "scenarios": [
+        "Test that BIO_f_cipher correctly encrypts data using a specified EVP_CIPHER, key, and IV and produces the expected ciphertext output."
+      ]
+    },
+    {
+      "seed": 17,
+      "ok": true,
+      "error": null,
+      "response": "The test verifies that a BIO created with BIO_f_cipher can encrypt data with a given cipher and key, flush the output, then decrypt it back to the original plaintext by reading through the BIO chain.",
+      "scenario": "The test verifies that a BIO created with BIO_f_cipher can encrypt data with a given cipher and key, flush the output, then decrypt it back to the original plaintext by reading through the BIO chain.",
+      "scenarios": [
+        "The test verifies that a BIO created with BIO_f_cipher can encrypt data with a given cipher and key, flush the output, then decrypt it back to the original plaintext by reading through the BIO chain."
+      ]
+    },
+    {
+      "seed": 18,
+      "ok": true,
+      "error": null,
+      "response": "The test verifies that writing plaintext through a cipher BIO configured for AES\u2011128\u2011CBC encryption produces the expected ciphertext and that reading the same data back through a cipher BIO set for decryption accurately restores the original plaintext.",
+      "scenario": "The test verifies that writing plaintext through a cipher BIO configured for AES\u2011128\u2011CBC encryption produces the expected ciphertext and that reading the same data back through a cipher BIO set for decryption accurately restores the original plaintext.",
+      "scenarios": [
+        "The test verifies that writing plaintext through a cipher BIO configured for AES\u2011128\u2011CBC encryption produces the expected ciphertext and that reading the same data back through a cipher BIO set for decryption accurately restores the original plaintext."
+      ]
+    },
+    {
+      "seed": 19,
+      "ok": true,
+      "error": null,
+      "response": "The test encrypts a known plaintext through a BIO_f_cipher chain, reads back the ciphertext, and asserts that it matches the expected encrypted output.",
+      "scenario": "The test encrypts a known plaintext through a BIO_f_cipher chain, reads back the ciphertext, and asserts that it matches the expected encrypted output.",
+      "scenarios": [
+        "The test encrypts a known plaintext through a BIO_f_cipher chain, reads back the ciphertext, and asserts that it matches the expected encrypted output."
+      ]
+    },
+    {
+      "seed": 20,
+      "ok": true,
+      "error": null,
+      "response": "Test that BIO_f_cipher correctly encrypts a known plaintext with a specified cipher, key, and IV, produces the expected ciphertext, and then decrypts it back to the original plaintext.",
+      "scenario": "Test that BIO_f_cipher correctly encrypts a known plaintext with a specified cipher, key, and IV, produces the expected ciphertext, and then decrypts it back to the original plaintext.",
+      "scenarios": [
+        "Test that BIO_f_cipher correctly encrypts a known plaintext with a specified cipher, key, and IV, produces the expected ciphertext, and then decrypts it back to the original plaintext."
+      ]
+    },
+    {
+      "seed": 21,
+      "ok": true,
+      "error": null,
+      "response": "Test that BIO_f_cipher correctly encrypts a known plaintext with a specific cipher, key, and IV and then decrypts the resulting ciphertext back to the original plaintext.",
+      "scenario": "Test that BIO_f_cipher correctly encrypts a known plaintext with a specific cipher, key, and IV and then decrypts the resulting ciphertext back to the original plaintext.",
+      "scenarios": [
+        "Test that BIO_f_cipher correctly encrypts a known plaintext with a specific cipher, key, and IV and then decrypts the resulting ciphertext back to the original plaintext."
+      ]
+    },
+    {
+      "seed": 22,
+      "ok": true,
+      "error": null,
+      "response": "The test creates a cipher BIO, writes plaintext to it, reads the resulting ciphertext, then decrypts that ciphertext with a second cipher BIO and verifies that the final output exactly matches the original plaintext.",
+      "scenario": "The test creates a cipher BIO, writes plaintext to it, reads the resulting ciphertext, then decrypts that ciphertext with a second cipher BIO and verifies that the final output exactly matches the original plaintext.",
+      "scenarios": [
+        "The test creates a cipher BIO, writes plaintext to it, reads the resulting ciphertext, then decrypts that ciphertext with a second cipher BIO and verifies that the final output exactly matches the original plaintext."
+      ]
+    },
+    {
+      "seed": 23,
+      "ok": true,
+      "error": null,
+      "response": "Test that BIO_f_cipher correctly encrypts and then decrypts a known plaintext using AES\u2011128\u2011CBC with a specific key and IV, producing the original plaintext after the round\u2011trip.",
+      "scenario": "Test that BIO_f_cipher correctly encrypts and then decrypts a known plaintext using AES\u2011128\u2011CBC with a specific key and IV, producing the original plaintext after the round\u2011trip.",
+      "scenarios": [
+        "Test that BIO_f_cipher correctly encrypts and then decrypts a known plaintext using AES\u2011128\u2011CBC with a specific key and IV, producing the original plaintext after the round\u2011trip."
+      ]
+    },
+    {
+      "seed": 24,
+      "ok": true,
+      "error": null,
+      "response": "The test verifies that BIO_set_cipher properly initializes the cipher context and that encrypted data written through the BIO chain can be successfully read back and decrypted to the original plaintext.",
+      "scenario": "The test verifies that BIO_set_cipher properly initializes the cipher context and that encrypted data written through the BIO chain can be successfully read back and decrypted to the original plaintext.",
+      "scenarios": [
+        "The test verifies that BIO_set_cipher properly initializes the cipher context and that encrypted data written through the BIO chain can be successfully read back and decrypted to the original plaintext."
+      ]
+    },
+    {
+      "seed": 25,
+      "ok": true,
+      "error": null,
+      "response": "The test verifies that initializing a BIO with\u202fBIO_set_cipher\u202fusing a specific EVP_CIPHER, key, and IV correctly creates and configures the internal EVP_CIPHER_CTX for encryption and that data written through the BIO is encrypted to the expected ciphertext length.",
+      "scenario": "The test verifies that initializing a BIO with\u202fBIO_set_cipher\u202fusing a specific EVP_CIPHER, key, and IV correctly creates and configures the internal EVP_CIPHER_CTX for encryption and that data written through the BIO is encrypted to the expected ciphertext length.",
+      "scenarios": [
+        "The test verifies that initializing a BIO with\u202fBIO_set_cipher\u202fusing a specific EVP_CIPHER, key, and IV correctly creates and configures the internal EVP_CIPHER_CTX for encryption and that data written through the BIO is encrypted to the expected ciphertext length."
+      ]
+    },
+    {
+      "seed": 26,
+      "ok": true,
+      "error": null,
+      "response": "The test verifies that initializing a BIO with BIO_f_cipher using a known cipher, key, and IV correctly encrypts a sample plaintext to the expected ciphertext and that resetting the BIO for decryption reproduces the original plaintext.",
+      "scenario": "The test verifies that initializing a BIO with BIO_f_cipher using a known cipher, key, and IV correctly encrypts a sample plaintext to the expected ciphertext and that resetting the BIO for decryption reproduces the original plaintext.",
+      "scenarios": [
+        "The test verifies that initializing a BIO with BIO_f_cipher using a known cipher, key, and IV correctly encrypts a sample plaintext to the expected ciphertext and that resetting the BIO for decryption reproduces the original plaintext."
+      ]
+    },
+    {
+      "seed": 27,
+      "ok": true,
+      "error": null,
+      "response": "The test verifies that a BIO created with BIO_f_cipher correctly encrypts data written to it and decrypts data read from it using a specified cipher, key, and IV, ensuring proper handling of buffering, finalization, and error conditions.",
+      "scenario": "The test verifies that a BIO created with BIO_f_cipher correctly encrypts data written to it and decrypts data read from it using a specified cipher, key, and IV, ensuring proper handling of buffering, finalization, and error conditions.",
+      "scenarios": [
+        "The test verifies that a BIO created with BIO_f_cipher correctly encrypts data written to it and decrypts data read from it using a specified cipher, key, and IV, ensuring proper handling of buffering, finalization, and error conditions."
+      ]
+    },
+    {
+      "seed": 28,
+      "ok": true,
+      "error": null,
+      "response": "Test that BIO_set_cipher correctly initializes a BIO with a given EVP_CIPHER, key, IV, and encryption flag, and that subsequent BIO_write and BIO_read operations produce the expected encrypted/decrypted data.",
+      "scenario": "Test that BIO_set_cipher correctly initializes a BIO with a given EVP_CIPHER, key, IV, and encryption flag, and that subsequent BIO_write and BIO_read operations produce the expected encrypted/decrypted data.",
+      "scenarios": [
+        "Test that BIO_set_cipher correctly initializes a BIO with a given EVP_CIPHER, key, IV, and encryption flag, and that subsequent BIO_write and BIO_read operations produce the expected encrypted/decrypted data."
+      ]
+    },
+    {
+      "seed": 29,
+      "ok": true,
+      "error": null,
+      "response": "The test verifies that BIO_set_cipher correctly initializes the cipher context with the given algorithm, key, IV, and encryption flag, and that data written through the BIO is encrypted to produce the expected ciphertext.",
+      "scenario": "The test verifies that BIO_set_cipher correctly initializes the cipher context with the given algorithm, key, IV, and encryption flag, and that data written through the BIO is encrypted to produce the expected ciphertext.",
+      "scenarios": [
+        "The test verifies that BIO_set_cipher correctly initializes the cipher context with the given algorithm, key, IV, and encryption flag, and that data written through the BIO is encrypted to produce the expected ciphertext."
+      ]
+    },
+    {
+      "seed": 30,
+      "ok": true,
+      "error": null,
+      "response": "The test encrypts a buffer using BIO_f_cipher with a known cipher, key, and IV, then reads back the encrypted data, decrypts it, and asserts that the resulting plaintext matches the original input.",
+      "scenario": "The test encrypts a buffer using BIO_f_cipher with a known cipher, key, and IV, then reads back the encrypted data, decrypts it, and asserts that the resulting plaintext matches the original input.",
+      "scenarios": [
+        "The test encrypts a buffer using BIO_f_cipher with a known cipher, key, and IV, then reads back the encrypted data, decrypts it, and asserts that the resulting plaintext matches the original input."
+      ]
+    },
+    {
+      "seed": 31,
+      "ok": true,
+      "error": null,
+      "response": "Test that a BIO created with BIO_f_cipher correctly encrypts data written through it and subsequently decrypts the data when read back, confirming proper initialization, processing, and finalization of the cipher context.",
+      "scenario": "Test that a BIO created with BIO_f_cipher correctly encrypts data written through it and subsequently decrypts the data when read back, confirming proper initialization, processing, and finalization of the cipher context.",
+      "scenarios": [
+        "Test that a BIO created with BIO_f_cipher correctly encrypts data written through it and subsequently decrypts the data when read back, confirming proper initialization, processing, and finalization of the cipher context."
+      ]
+    },
+    {
+      "seed": 32,
+      "ok": true,
+      "error": null,
+      "response": "Test that encrypting a known plaintext with BIO_f_cipher using a specific cipher, key and IV, then flushing and reading back the data yields the original plaintext after decryption.",
+      "scenario": "Test that encrypting a known plaintext with BIO_f_cipher using a specific cipher, key and IV, then flushing and reading back the data yields the original plaintext after decryption.",
+      "scenarios": [
+        "Test that encrypting a known plaintext with BIO_f_cipher using a specific cipher, key and IV, then flushing and reading back the data yields the original plaintext after decryption."
+      ]
+    },
+    {
+      "seed": 33,
+      "ok": true,
+      "error": null,
+      "response": "The test verifies that a cipher BIO created with BIO_f_cipher correctly encrypts a known plaintext, writes it through the BIO chain, then decrypts it with a matching cipher BIO and confirms that the final output exactly matches the original plaintext.",
+      "scenario": "The test verifies that a cipher BIO created with BIO_f_cipher correctly encrypts a known plaintext, writes it through the BIO chain, then decrypts it with a matching cipher BIO and confirms that the final output exactly matches the original plaintext.",
+      "scenarios": [
+        "The test verifies that a cipher BIO created with BIO_f_cipher correctly encrypts a known plaintext, writes it through the BIO chain, then decrypts it with a matching cipher BIO and confirms that the final output exactly matches the original plaintext."
+      ]
+    },
+    {
+      "seed": 34,
+      "ok": true,
+      "error": null,
+      "response": "The test verifies that BIO_set_cipher correctly initializes the cipher context with a given EVP_CIPHER, key, and IV and returns success for valid encryption and decryption settings.",
+      "scenario": "The test verifies that BIO_set_cipher correctly initializes the cipher context with a given EVP_CIPHER, key, and IV and returns success for valid encryption and decryption settings.",
+      "scenarios": [
+        "The test verifies that BIO_set_cipher correctly initializes the cipher context with a given EVP_CIPHER, key, and IV and returns success for valid encryption and decryption settings."
+      ]
+    },
+    {
+      "seed": 35,
+      "ok": true,
+      "error": null,
+      "response": "The test verifies that BIO_set_cipher correctly initializes the cipher context for both encryption and decryption modes and that data written through the BIO is processed to produce the expected encrypted or decrypted output.",
+      "scenario": "The test verifies that BIO_set_cipher correctly initializes the cipher context for both encryption and decryption modes and that data written through the BIO is processed to produce the expected encrypted or decrypted output.",
+      "scenarios": [
+        "The test verifies that BIO_set_cipher correctly initializes the cipher context for both encryption and decryption modes and that data written through the BIO is processed to produce the expected encrypted or decrypted output."
+      ]
+    },
+    {
+      "seed": 36,
+      "ok": true,
+      "error": null,
+      "response": "The test verifies that BIO_f_cipher correctly encrypts and decrypts data using a specified cipher (e.g., AES\u2011256\u2011CBC) with given key and IV, ensuring the output matches the expected ciphertext and that decryption restores the original plaintext.",
+      "scenario": "The test verifies that BIO_f_cipher correctly encrypts and decrypts data using a specified cipher (e.g., AES\u2011256\u2011CBC) with given key and IV, ensuring the output matches the expected ciphertext and that decryption restores the original plaintext.",
+      "scenarios": [
+        "The test verifies that BIO_f_cipher correctly encrypts and decrypts data using a specified cipher (e.g., AES\u2011256\u2011CBC) with given key and IV, ensuring the output matches the expected ciphertext and that decryption restores the original plaintext."
+      ]
+    },
+    {
+      "seed": 37,
+      "ok": true,
+      "error": null,
+      "response": "Test that data written through a BIO_f_cipher with a specific key and IV is correctly encrypted and, when the same BIO chain is switched to decryption mode, the output matches the original plaintext.",
+      "scenario": "Test that data written through a BIO_f_cipher with a specific key and IV is correctly encrypted and, when the same BIO chain is switched to decryption mode, the output matches the original plaintext.",
+      "scenarios": [
+        "Test that data written through a BIO_f_cipher with a specific key and IV is correctly encrypted and, when the same BIO chain is switched to decryption mode, the output matches the original plaintext."
+      ]
+    },
+    {
+      "seed": 38,
+      "ok": true,
+      "error": null,
+      "response": "Test that encrypting data with BIO_f_cipher using AES\u2011128\u2011CBC and then decrypting it with the same settings returns the original plaintext, verifying correct handling of buffering, CipherUpdate, and CipherFinal.",
+      "scenario": "Test that encrypting data with BIO_f_cipher using AES\u2011128\u2011CBC and then decrypting it with the same settings returns the original plaintext, verifying correct handling of buffering, CipherUpdate, and CipherFinal.",
+      "scenarios": [
+        "Test that encrypting data with BIO_f_cipher using AES\u2011128\u2011CBC and then decrypting it with the same settings returns the original plaintext, verifying correct handling of buffering, CipherUpdate, and CipherFinal."
+      ]
+    },
+    {
+      "seed": 39,
+      "ok": true,
+      "error": null,
+      "response": "The test verifies that BIO_set_cipher successfully initializes the BIO\u2019s cipher context with the specified algorithm, key, IV, and encryption flag, and that subsequent reads and writes correctly encrypt and decrypt data.",
+      "scenario": "The test verifies that BIO_set_cipher successfully initializes the BIO\u2019s cipher context with the specified algorithm, key, IV, and encryption flag, and that subsequent reads and writes correctly encrypt and decrypt data.",
+      "scenarios": [
+        "The test verifies that BIO_set_cipher successfully initializes the BIO\u2019s cipher context with the specified algorithm, key, IV, and encryption flag, and that subsequent reads and writes correctly encrypt and decrypt data."
+      ]
+    },
+    {
+      "seed": 40,
+      "ok": true,
+      "error": null,
+      "response": "The test verifies that BIO_set_cipher correctly initializes the cipher context and enables successful encryption of input data when the BIO is set to encryption mode.",
+      "scenario": "The test verifies that BIO_set_cipher correctly initializes the cipher context and enables successful encryption of input data when the BIO is set to encryption mode.",
+      "scenarios": [
+        "The test verifies that BIO_set_cipher correctly initializes the cipher context and enables successful encryption of input data when the BIO is set to encryption mode."
+      ]
+    },
+    {
+      "seed": 41,
+      "ok": true,
+      "error": null,
+      "response": "Test that BIO_f_cipher correctly encrypts data written through the BIO chain, decrypts it when read back, and properly handles buffering, final block processing, and error conditions.",
+      "scenario": "Test that BIO_f_cipher correctly encrypts data written through the BIO chain, decrypts it when read back, and properly handles buffering, final block processing, and error conditions.",
+      "scenarios": [
+        "Test that BIO_f_cipher correctly encrypts data written through the BIO chain, decrypts it when read back, and properly handles buffering, final block processing, and error conditions."
+      ]
+    },
+    {
+      "seed": 42,
+      "ok": true,
+      "error": null,
+      "response": "The test verifies that writing plaintext to a cipher BIO configured with AES\u2011128\u2011CBC, then flushing and reading from it, yields the exact original plaintext after encryption and decryption.",
+      "scenario": "The test verifies that writing plaintext to a cipher BIO configured with AES\u2011128\u2011CBC, then flushing and reading from it, yields the exact original plaintext after encryption and decryption.",
+      "scenarios": [
+        "The test verifies that writing plaintext to a cipher BIO configured with AES\u2011128\u2011CBC, then flushing and reading from it, yields the exact original plaintext after encryption and decryption."
+      ]
+    },
+    {
+      "seed": 43,
+      "ok": true,
+      "error": null,
+      "response": "The test encrypts a known plaintext with BIO_f_cipher using AES\u2011256\u2011CBC, then reads it back through the same BIO chain to verify that enc_write, enc_read, and the final block handling correctly restore the original data.",
+      "scenario": "The test encrypts a known plaintext with BIO_f_cipher using AES\u2011256\u2011CBC, then reads it back through the same BIO chain to verify that enc_write, enc_read, and the final block handling correctly restore the original data.",
+      "scenarios": [
+        "The test encrypts a known plaintext with BIO_f_cipher using AES\u2011256\u2011CBC, then reads it back through the same BIO chain to verify that enc_write, enc_read, and the final block handling correctly restore the original data."
+      ]
+    },
+    {
+      "seed": 44,
+      "ok": true,
+      "error": null,
+      "response": "Test that BIO_set_cipher correctly initializes the cipher context and returns success when provided with a valid EVP_CIPHER, key, IV, and encryption flag.",
+      "scenario": "Test that BIO_set_cipher correctly initializes the cipher context and returns success when provided with a valid EVP_CIPHER, key, IV, and encryption flag.",
+      "scenarios": [
+        "Test that BIO_set_cipher correctly initializes the cipher context and returns success when provided with a valid EVP_CIPHER, key, IV, and encryption flag."
+      ]
+    },
+    {
+      "seed": 45,
+      "ok": true,
+      "error": null,
+      "response": "The test verifies that BIO_f_cipher correctly encrypts and decrypts a known plaintext using a fixed cipher, key, and IV, producing the expected ciphertext and allowing round\u2011trip recovery of the original data.",
+      "scenario": "The test verifies that BIO_f_cipher correctly encrypts and decrypts a known plaintext using a fixed cipher, key, and IV, producing the expected ciphertext and allowing round\u2011trip recovery of the original data.",
+      "scenarios": [
+        "The test verifies that BIO_f_cipher correctly encrypts and decrypts a known plaintext using a fixed cipher, key, and IV, producing the expected ciphertext and allowing round\u2011trip recovery of the original data."
+      ]
+    },
+    {
+      "seed": 46,
+      "ok": true,
+      "error": null,
+      "response": "Test that BIO_set_cipher correctly initializes the cipher context and returns success when configuring a valid EVP_CIPHER (e.g., AES\u2011256\u2011CBC) with a given key and IV.",
+      "scenario": "Test that BIO_set_cipher correctly initializes the cipher context and returns success when configuring a valid EVP_CIPHER (e.g., AES\u2011256\u2011CBC) with a given key and IV.",
+      "scenarios": [
+        "Test that BIO_set_cipher correctly initializes the cipher context and returns success when configuring a valid EVP_CIPHER (e.g., AES\u2011256\u2011CBC) with a given key and IV."
+      ]
+    },
+    {
+      "seed": 47,
+      "ok": true,
+      "error": null,
+      "response": "Test that BIO_f_cipher encrypts data written through the BIO chain using a specified cipher, key, and IV and that the output matches the expected ciphertext.",
+      "scenario": "Test that BIO_f_cipher encrypts data written through the BIO chain using a specified cipher, key, and IV and that the output matches the expected ciphertext.",
+      "scenarios": [
+        "Test that BIO_f_cipher encrypts data written through the BIO chain using a specified cipher, key, and IV and that the output matches the expected ciphertext."
+      ]
+    },
+    {
+      "seed": 48,
+      "ok": true,
+      "error": null,
+      "response": "The test verifies that BIO_f_cipher correctly encrypts a sample plaintext with a specific cipher and key and then decrypts the resulting ciphertext back to the original plaintext.",
+      "scenario": "The test verifies that BIO_f_cipher correctly encrypts a sample plaintext with a specific cipher and key and then decrypts the resulting ciphertext back to the original plaintext.",
+      "scenarios": [
+        "The test verifies that BIO_f_cipher correctly encrypts a sample plaintext with a specific cipher and key and then decrypts the resulting ciphertext back to the original plaintext."
+      ]
+    },
+    {
+      "seed": 49,
+      "ok": true,
+      "error": null,
+      "response": "Verify that a BIO chain using BIO_f_cipher with EVP_aes_128_cbc encrypts a known plaintext, that a subsequent BIO_f_cipher decryption with the same key and IV recovers the original plaintext, and that BIO_flush correctly processes and outputs the final cipher block.",
+      "scenario": "Verify that a BIO chain using BIO_f_cipher with EVP_aes_128_cbc encrypts a known plaintext, that a subsequent BIO_f_cipher decryption with the same key and IV recovers the original plaintext, and that BIO_flush correctly processes and outputs the final cipher block.",
+      "scenarios": [
+        "Verify that a BIO chain using BIO_f_cipher with EVP_aes_128_cbc encrypts a known plaintext, that a subsequent BIO_f_cipher decryption with the same key and IV recovers the original plaintext, and that BIO_flush correctly processes and outputs the final cipher block."
+      ]
+    },
+    {
+      "seed": 50,
+      "ok": true,
+      "error": null,
+      "response": "Test that BIO_f_cipher correctly encrypts and decrypts a known plaintext with a specific cipher, key, and IV, verifying the output matches the expected ciphertext and that decryption restores the original data.",
+      "scenario": "Test that BIO_f_cipher correctly encrypts and decrypts a known plaintext with a specific cipher, key, and IV, verifying the output matches the expected ciphertext and that decryption restores the original data.",
+      "scenarios": [
+        "Test that BIO_f_cipher correctly encrypts and decrypts a known plaintext with a specific cipher, key, and IV, verifying the output matches the expected ciphertext and that decryption restores the original data."
+      ]
+    }
+  ]
+}

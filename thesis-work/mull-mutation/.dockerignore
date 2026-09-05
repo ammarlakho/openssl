@@ -1,0 +1,4 @@
+# Only the Dockerfile is needed for the toolchain image (no COPY from this tree).
+# Keeps `docker build` from uploading the entire OpenSSL tree.
+*
+!Dockerfile

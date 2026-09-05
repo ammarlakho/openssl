@@ -327,3 +327,45 @@ doc-nits
 # LSP (Language Server Protocol) support
 .cache/
 compile_commands.json
+
+*.tmp
+default.profraw
+
+/thesis-work/mutation/*/
+
+test/generated/*/
+
+test/*.o
+
+# Ignore all files starting with this prefix
+test/gen_*
+
+# Same convention for the scoping-experiment arms: ctx* are the context
+# ablation cells, a1*/a2* the two arms, bn* the second source file. Each run
+# leaves a binary and a build directory in test/ alongside its .c.
+test/ctxhead_*
+test/ctxtest_*
+test/a1*
+test/a2*
+# Anchored on the trailing _<YYMMDD>_<HHMMSS> that every generated name
+# carries: a bare test/bn_* also swallows upstream's bn_internal_test.c and
+# bn_rand_range.h, whose own build artifacts are already covered by the
+# /test/*test rule above.
+test/bn_*_[0-9][0-9][0-9][0-9][0-9][0-9]_[0-9][0-9][0-9][0-9][0-9][0-9]*
+
+# The generated .c files themselves are experiment *output*, not source: one
+# file per (arm, seed) generation, ~590 of them. The code that produces them
+# lives in thesis-work/scripts; the run record lives in
+# thesis-work/experiments/results. Keeping the outputs out of the tree is what
+# keeps the diff against upstream OpenSSL readable.
+
+# Early hand-run scratch generations, superseded by the scripted pipeline.
+# test/generated_test.c is deliberately NOT ignored: thesis-work/scripts/
+# llmtest/buildinfo.py anchors its build.info edits on that name.
+test/generated_test_3.c
+test/generated_test_cursor.c
+test/generated_test_gemma.c
+test/my_generated.c
+
+# Per-generation prompt/response/meta captures and their run log.
+test/generated/

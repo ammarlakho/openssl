@@ -1,0 +1,179 @@
+{
+  "source": "crypto/evp/bio_enc.c",
+  "reviewed_utc": "2026-08-28 (updated after the arms ran)",
+  "corpus_runs": 158,
+  "method": "Hand classification by reading crypto/evp/bio_enc.c together with its callers in crypto/bio/bio_lib.c and crypto/bio/bio_meth.c. Equivalent-mutant detection is undecidable in general and manual in practice; each verdict below states the argument so it can be checked.",
+  "buckets": {
+    "equivalent": "No input can distinguish the mutant from the original. Excluded from every denominator.",
+    "oracle": "The line runs and the state it changes is reachable, but no test checks it.",
+    "stimulus": "The line runs, but never with the values that make the change observable.",
+    "reachability": "The line never runs under any test in the corpus."
+  },
+  "notes": [
+    "No mutant in this set is a reachability gap: every one has been executed by at least one run in the corpus (minimum coverage is 1/95, for L140 and L199, both by the hand-written bio_enc_test).",
+    "Three mutants (L89, L93, L96) are observable only as a memory leak. BIO_free ignores the return value of the method's destroy callback, so nothing in the public API distinguishes them. OpenSSL 3.x removed crypto-mdebug and testutil does no per-test leak checking, so under this harness they cannot be killed at all.",
+    "Four mutants (L134, L140, L180, L199) change only how many bytes are passed to each EVP_CipherUpdate call. The decrypted byte stream is unchanged, so they are killable only by an oracle over the call pattern -- a source BIO that records the sizes of the reads enc_read makes on it -- not over the output.",
+    "L80 and L438 mask each other: both set the BIO's init flag, and every ordinary sequence sets it through both. Each is killable, but only by an oracle that observes init between the two calls.",
+    "The surviving set is NOT monotone. Mull runs coverage-guided, so a mutant only appears in a report once some test executes its line. An Arm 1 run (a1n5_gpt_oss_120b_t0p5_tp1_s3) reached the EVP_CipherUpdate failure branch in enc_write for the first time in the whole corpus, which made L273 visible -- and it survived. So \"never killed\" is always relative to the coverage the corpus has reached, and a new test can enlarge the denominator as well as shrink it."
+  ],
+  "mutants": {
+    "cxx_assign_const:/openssl/crypto/evp/bio_enc.c:76:15:76:16": {
+      "bucket": "oracle",
+      "confidence": "high",
+      "why": "cont is read as `cont <= 0` (L148, L322), where 1 and 42 agree, and returned by enc_read at L234 when ret == 0. A zero-length read takes that path.",
+      "kill": "TEST_int_eq(BIO_read(benc, buf, 0), 1) -- bio_read_intern does not short-circuit dlen == 0, and BIO_read returns readbytes, so this returns ctx->cont verbatim.",
+      "outcome": "KILLED by Arm 2 in 4 of 6 usable runs, using the zero-length-read oracle predicted here."
+    },
+    "cxx_assign_const:/openssl/crypto/evp/bio_enc.c:77:13:77:14": {
+      "bucket": "oracle",
+      "confidence": "high",
+      "why": "ok is read only at L371, under BIO_C_GET_CIPHER_STATUS.",
+      "kill": "TEST_int_eq(BIO_get_cipher_status(benc), 1) on a BIO that has not yet failed.",
+      "outcome": "KILLED by Arm 2 in 6 of 6 usable runs."
+    },
+    "cxx_remove_void_call:/openssl/crypto/evp/bio_enc.c:80:5:80:24": {
+      "bucket": "oracle",
+      "confidence": "high",
+      "why": "Survives only because BIO_set_cipher (L438) sets init as well, so every ordinary sequence sets it twice.",
+      "kill": "TEST_int_eq(BIO_get_init(bio), 1) immediately after BIO_new(BIO_f_cipher()), before BIO_set_cipher.",
+      "outcome": "KILLED by Arm 2 in 4 of 6 usable runs, and once by Arm 1."
+    },
+    "cxx_eq_to_ne:/openssl/crypto/evp/bio_enc.c:89:11:89:13": {
+      "bucket": "oracle",
+      "confidence": "high",
+      "harness_blocked": true,
+      "why": "enc_free is only ever called by BIO_free with a != NULL, so the mutant returns 0 early and skips the frees. BIO_free ignores that return value, leaving a leak as the only difference.",
+      "kill": "A leak detector. Not available in this harness."
+    },
+    "cxx_eq_to_ne:/openssl/crypto/evp/bio_enc.c:93:11:93:13": {
+      "bucket": "oracle",
+      "confidence": "high",
+      "harness_blocked": true,
+      "why": "As L89: b is non-NULL in practice, so the mutant skips the frees and BIO_free discards the return.",
+      "kill": "A leak detector. Not available in this harness."
+    },
+    "cxx_remove_void_call:/openssl/crypto/evp/bio_enc.c:96:5:96:35": {
+      "bucket": "oracle",
+      "confidence": "high",
+      "harness_blocked": true,
+      "why": "Leaks the EVP_CIPHER_CTX and nothing else; no public API observes it.",
+      "kill": "A leak detector. Not available in this harness."
+    },
+    "cxx_remove_void_call:/openssl/crypto/evp/bio_enc.c:98:5:98:26": {
+      "bucket": "equivalent",
+      "confidence": "high",
+      "why": "BIO_free calls OPENSSL_free(a) as soon as destroy returns, and the BIO_ENC_CTX itself was freed on the line above. Reading a->ptr afterwards is a use-after-free, so no defined program can observe the difference."
+    },
+    "cxx_remove_void_call:/openssl/crypto/evp/bio_enc.c:99:5:99:23": {
+      "bucket": "equivalent",
+      "confidence": "high",
+      "why": "As L98: the BIO is freed immediately afterwards, so the cleared init flag is never read by defined code."
+    },
+    "cxx_assign_const:/openssl/crypto/evp/bio_enc.c:134:15:134:16": {
+      "bucket": "oracle",
+      "confidence": "medium",
+      "call_pattern_only": true,
+      "why": "blocksize reaches only three places: `== 0` (L136) and `== 1` (L139), where 16 and 42 behave alike, and `int j = outl - blocksize` (L180). A larger blocksize makes j smaller, so CipherUpdate is fed fewer bytes per iteration and the loop runs more times. The plaintext produced is identical and the output buffer stays within bounds.",
+      "kill": "A source BIO that records the length of each read enc_read performs."
+    },
+    "cxx_assign_const:/openssl/crypto/evp/bio_enc.c:140:19:140:20": {
+      "bucket": "stimulus",
+      "confidence": "medium",
+      "call_pattern_only": true,
+      "why": "Reached only when the cipher's block size is 1, which in the whole corpus only the hand-written bio_enc_test does (cov 1/95). Once reached the effect is the same chunking-only change as L134: j becomes outl - 42 rather than outl.",
+      "kill": "A stream cipher (ChaCha20 or RC4) plus a call-pattern oracle."
+    },
+    "cxx_assign_const:/openssl/crypto/evp/bio_enc.c:164:31:164:32": {
+      "bucket": "equivalent",
+      "confidence": "high",
+      "why": "finished is read only as `if (!ctx->finished)` (L352) and reset to 0 at L315. 1 and 42 are both truthy, so no read distinguishes them."
+    },
+    "cxx_init_const:/openssl/crypto/evp/bio_enc.c:180:21:180:22": {
+      "bucket": "oracle",
+      "confidence": "medium",
+      "call_pattern_only": true,
+      "why": "j is only the per-iteration chunk size. Fixing it at 42 changes how much is fed to each CipherUpdate and how often the loop runs, not the bytes produced; j = 42 is smaller than outl - blocksize whenever outl > 256, so the output buffer is never overrun.",
+      "kill": "A source BIO that records the length of each read enc_read performs."
+    },
+    "cxx_le_to_lt:/openssl/crypto/evp/bio_enc.c:192:30:192:32": {
+      "bucket": "equivalent",
+      "confidence": "high",
+      "why": "The two branches differ only when i - j == 0, and there they converge. i is always read_end - read_start, so read_start += j lands exactly on read_end, which is what the taken branch assigns. The mutant then makes a zero-length EVP_CipherUpdate, sets cont to 1 when it is already 1, sees buf_len == 0 and continues -- the same state, one statement later."
+    },
+    "cxx_assign_const:/openssl/crypto/evp/bio_enc.c:199:19:199:20": {
+      "bucket": "stimulus",
+      "confidence": "medium",
+      "call_pattern_only": true,
+      "why": "Reachable, not unreachable: it needs outl <= ENC_MIN_CHUNK while more than 256 bytes are buffered, i.e. a short read from a well-filled source. Tests read into large buffers, take the L174 branch and `continue` at L194, so they skip it (cov 1/95). The effect once reached is again chunking only, 42 bytes per update instead of 256.",
+      "kill": "Read in chunks of <= 256 bytes from a source holding more, plus a call-pattern oracle."
+    },
+    "cxx_assign_const:/openssl/crypto/evp/bio_enc.c:208:23:208:24": {
+      "bucket": "stimulus",
+      "confidence": "medium",
+      "why": "cont is compared as `<= 0` everywhere, so 42 behaves as 1 except where enc_read returns it at L234, which needs ret == 0 on exit. The only route is the retry break at L170 with i exactly 0 and BIO_should_retry set on the source.",
+      "kill": "A custom source BIO returning 0 with the retry flag set, then checking BIO_read's return value."
+    },
+    "cxx_le_to_lt:/openssl/crypto/evp/bio_enc.c:219:26:219:28": {
+      "bucket": "equivalent",
+      "confidence": "high",
+      "why": "The if and the else assign i from the two operands being compared. When buf_len == outl -- the only case the mutation changes -- both assign the same value."
+    },
+    "cxx_le_to_lt:/openssl/crypto/evp/bio_enc.c:223:15:223:17": {
+      "bucket": "equivalent",
+      "confidence": "high",
+      "why": "The branches differ only at i == 0. Reaching L223 through the else at L173 is impossible with i == 0, because L215 continues when buf_len == 0 and the loop guarantees outl > 0. Reaching it through the CipherFinal path at L160 can give buf_len == 0, but that path also sets cont = i <= 0, so the mutant simply breaks at L148 on the next iteration with the same ret and the same state."
+    },
+    "cxx_remove_void_call:/openssl/crypto/evp/bio_enc.c:233:5:233:27": {
+      "bucket": "stimulus",
+      "confidence": "high",
+      "why": "The retry flags of the source are never propagated to the cipher BIO. Only visible if the source actually sets them, which the corpus's memory BIOs, read to EOF, do not.",
+      "kill": "Read from a source that signals retry (a BIO pair, or a memory BIO with BIO_set_mem_eof_return(-1)), then assert BIO_should_retry(benc)."
+    },
+    "cxx_init_const:/openssl/crypto/evp/bio_enc.c:239:9:239:12": {
+      "bucket": "equivalent",
+      "confidence": "high",
+      "why": "ret is assigned inl at L248 before any read of it. The only earlier exit, L246, returns the literal 0."
+    },
+    "cxx_le_to_lt:/openssl/crypto/evp/bio_enc.c:254:15:254:17": {
+      "bucket": "stimulus",
+      "confidence": "high",
+      "why": "Differs only when BIO_write on the sink returns exactly 0, where the mutant loops forever because neither buf_off nor n advances. Mull would score that as a timeout, i.e. killed; no run produces it, so no test drives the sink to return 0.",
+      "kill": "A custom sink BIO whose write returns 0."
+    },
+    "cxx_le_to_lt:/openssl/crypto/evp/bio_enc.c:263:30:263:32": {
+      "bucket": "stimulus",
+      "confidence": "medium",
+      "why": "Needs in != NULL with inl == 0, which BIO_write does pass through -- bio_write_intern has no zero-length short circuit. The mutant then falls past the guard and resets buf_off to 0 and copies the sink's retry flags. buf_off only matters if a previous partial write left buf_len non-zero, so the retry flags are the easier of the two effects to observe.",
+      "kill": "Leave retry flags set on the sink, call BIO_write(benc, buf, 0), then assert BIO_should_retry(benc) is unset."
+    },
+    "cxx_assign_const:/openssl/crypto/evp/bio_enc.c:266:18:266:19": {
+      "bucket": "equivalent",
+      "confidence": "medium",
+      "why": "L263 guarantees inl > 0, so the loop below always runs, and its first action at L279 is to assign buf_off = 0 before anything reads it. The one path that escapes is an EVP_CipherUpdate failure at L269, which returns before L279 and leaves buf_off at 42. Treated as equivalent because nothing in the snippet contract's single-BIO setup can make CipherUpdate fail."
+    },
+    "cxx_le_to_lt:/openssl/crypto/evp/bio_enc.c:283:19:283:21": {
+      "bucket": "stimulus",
+      "confidence": "high",
+      "why": "As L254, in the inner write loop: differs only when the sink returns exactly 0, where the mutant spins.",
+      "kill": "A custom sink BIO whose write returns 0."
+    },
+    "cxx_remove_void_call:/openssl/crypto/evp/bio_enc.c:293:5:293:27": {
+      "bucket": "stimulus",
+      "confidence": "high",
+      "why": "The write-side counterpart of L233: the sink's retry flags never reach the cipher BIO.",
+      "kill": "Write into a full BIO pair, then assert BIO_should_retry(benc)."
+    },
+    "cxx_remove_void_call:/openssl/crypto/evp/bio_enc.c:438:5:438:23": {
+      "bucket": "oracle",
+      "confidence": "high",
+      "why": "Masked by enc_new (L80), which has already set init on any BIO that reaches BIO_set_cipher.",
+      "kill": "BIO_set_init(b, 0) before BIO_set_cipher, then TEST_int_eq(BIO_get_init(b), 1). Contrived, but a valid oracle."
+    },
+    "cxx_assign_const:/openssl/crypto/evp/bio_enc.c:273:21:273:22": {
+      "bucket": "oracle",
+      "confidence": "high",
+      "why": "Only became visible after an Arm 1 test first reached the EVP_CipherUpdate failure branch (cov 1/158). ok is read only at L371, under BIO_C_GET_CIPHER_STATUS, so a failed update that sets ok to 42 instead of 0 is observable there and nowhere else.",
+      "kill": "Force EVP_CipherUpdate to fail, then TEST_int_eq(BIO_get_cipher_status(b), 0)."
+    }
+  }
+}

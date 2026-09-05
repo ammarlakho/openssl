@@ -1,0 +1,32 @@
+{
+  "source": "crypto/bn/bn_add.c",
+  "task": "BN_add and BN_sub over positive, negative and zero operands",
+  "test_fn": "test_bn_add_generated",
+  "prefix": "bn",
+  "profile": "gptoss",
+  "snippet": true,
+  "arm": 0,
+  "repeats": 1,
+  "sleep": 0,
+  "context": {
+    "refs": 4,
+    "lines": 50,
+    "ref_slice": "test",
+    "keywords": []
+  },
+  "grid": {
+    "temperature": [
+      0.5
+    ],
+    "top_p": [
+      1.0
+    ],
+    "seed": [
+      1,
+      2,
+      3,
+      4,
+      5
+    ]
+  }
+}

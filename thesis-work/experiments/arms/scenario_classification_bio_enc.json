@@ -1,0 +1,202 @@
+{
+ "design": "Arm 1 stage 1, one scenario per call, seeds 1-50",
+ "scenarios": "thesis-work/experiments/arms/scenarios_bio_enc.json",
+ "classified_by": "hand, reading each sentence against the behaviours the never-killed mutants require (thesis-work/experiments/triage/bio_enc.json)",
+ "reviewed_utc": "2026-09-06",
+ "note": "Rows are the behaviours a test must exhibit to kill a surviving mutant, not generic test categories. A scenario counts only if it names the behaviour, not if it merely operates in the same function. `stimulus_only` records scenarios that set up the right situation without proposing anything that would observe the difference -- the stimulus/oracle split is the finding. Under this design every behaviour row is empty: asked for one test, the model proposes the round trip.",
+ "behaviours": {
+  "zero-length read (L76)": {
+   "needs": "BIO_read(b, buf, 0) and check the return",
+   "scenarios": []
+  },
+  "cipher status query (L77)": {
+   "needs": "BIO_get_cipher_status == 1",
+   "scenarios": [],
+   "stimulus_only": [
+    "s27",
+    "s41"
+   ],
+   "stimulus_note": "name 'error conditions' in passing; neither names the status query or a bad decrypt"
+  },
+  "init flag observed (L80, L438)": {
+   "needs": "BIO_get_init between BIO_new and BIO_set_cipher",
+   "scenarios": [],
+   "stimulus_only": [
+    "s8",
+    "s9",
+    "s10",
+    "s24",
+    "s25",
+    "s28",
+    "s29",
+    "s34",
+    "s35",
+    "s39",
+    "s40",
+    "s44",
+    "s46"
+   ],
+   "stimulus_note": "assert that BIO_set_cipher initialises the context or returns success, which is the same setup with a different oracle"
+  },
+  "leak on free (L89, L93, L96)": {
+   "needs": "a leak detector; not available in this harness",
+   "scenarios": []
+  },
+  "call-pattern oracle (L134, L180, L199)": {
+   "needs": "a source BIO that records the size of each read",
+   "scenarios": []
+  },
+  "stream cipher, block size 1 (L140)": {
+   "needs": "ChaCha20 or RC4",
+   "scenarios": [],
+   "stimulus_note": "every scenario that names a cipher names AES-CBC"
+  },
+  "retry / non-blocking (L208, L233, L263, L293)": {
+   "needs": "a peer that sets retry flags, then BIO_should_retry",
+   "scenarios": []
+  },
+  "sink returns exactly 0 (L254, L283)": {
+   "needs": "a custom sink BIO whose write returns 0",
+   "scenarios": []
+  },
+  "short read, outl <= 256 (L199)": {
+   "needs": "read in <=256-byte chunks from a full source",
+   "scenarios": []
+  }
+ },
+ "what_was_proposed_instead": {
+  "round trip: encrypt then decrypt": [
+   "s1",
+   "s2",
+   "s3",
+   "s7",
+   "s8",
+   "s11",
+   "s12",
+   "s14",
+   "s17",
+   "s18",
+   "s20",
+   "s21",
+   "s22",
+   "s23",
+   "s24",
+   "s26",
+   "s27",
+   "s28",
+   "s30",
+   "s31",
+   "s32",
+   "s33",
+   "s35",
+   "s36",
+   "s37",
+   "s38",
+   "s39",
+   "s41",
+   "s42",
+   "s43",
+   "s45",
+   "s48",
+   "s49",
+   "s50"
+  ],
+  "known-answer: expected ciphertext value": [
+   "s3",
+   "s4",
+   "s5",
+   "s6",
+   "s9",
+   "s13",
+   "s15",
+   "s16",
+   "s18",
+   "s19",
+   "s20",
+   "s26",
+   "s29",
+   "s36",
+   "s45",
+   "s47",
+   "s50"
+  ],
+  "BIO_set_cipher init / returns success": [
+   "s8",
+   "s9",
+   "s10",
+   "s24",
+   "s25",
+   "s28",
+   "s29",
+   "s34",
+   "s35",
+   "s39",
+   "s40",
+   "s44",
+   "s46"
+  ],
+  "flush / final block named": [
+   "s1",
+   "s4",
+   "s5",
+   "s9",
+   "s12",
+   "s17",
+   "s27",
+   "s31",
+   "s32",
+   "s38",
+   "s41",
+   "s42",
+   "s43",
+   "s49"
+  ],
+  "BIO_CTRL_RESET": [
+   "s26"
+  ],
+  "BIO_CTRL_DUP": [],
+  "pending / wpending / EOF": []
+ },
+ "round_trip_detail": {
+  "the oracle is the original plaintext returning": [
+   "s1",
+   "s2",
+   "s3",
+   "s11",
+   "s12",
+   "s14",
+   "s17",
+   "s18",
+   "s20",
+   "s21",
+   "s22",
+   "s23",
+   "s24",
+   "s26",
+   "s30",
+   "s32",
+   "s33",
+   "s36",
+   "s37",
+   "s38",
+   "s42",
+   "s43",
+   "s45",
+   "s48",
+   "s49",
+   "s50"
+  ],
+  "the round trip is implied, no oracle named": [
+   "s7",
+   "s27",
+   "s31",
+   "s41"
+  ],
+  "only 'the expected encrypted/decrypted output'": [
+   "s8",
+   "s28",
+   "s35",
+   "s39"
+  ]
+ }
+}
